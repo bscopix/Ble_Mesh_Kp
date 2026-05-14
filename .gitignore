@@ -1,0 +1,31 @@
+# ============================================================
+# Keil MDK-ARM build outputs
+# ============================================================
+
+# Object files, dependency files, linker intermediates
+MDK-ARM/*/*.o
+MDK-ARM/*/*.d
+MDK-ARM/*/*.lnp
+MDK-ARM/*/*.dep
+
+# Map and listing files
+MDK-ARM/*/*.map
+MDK-ARM/*/*.htm
+
+# Misc Keil intermediates
+MDK-ARM/*/*.iex
+
+# Keep firmware binaries (used for flashing/download)
+!MDK-ARM/*/*.bin
+!MDK-ARM/*/*.axf
+!MDK-ARM/*/*.hex
+
+# ============================================================
+# Keil user-specific UI state (window layout, per-user)
+# ============================================================
+MDK-ARM/*.uvguix.*
+
+# ============================================================
+# STM32CubeMX backup files
+# ============================================================
+*.ioc.bak

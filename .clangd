@@ -1,0 +1,53 @@
+CompileFlags:
+  Compiler: C:/Users/benoi/AppData/Local/Keil_v5/ARM/ARMCLANG/bin/armclang.exe
+  Add:
+    - -xc
+    - -std=c99
+    - --target=arm-arm-none-eabi
+    - -mcpu=cortex-m4
+    - -mfpu=fpv4-sp-d16
+    - -mfloat-abi=hard
+    - -D__ARMCC_VERSION=6230000
+    - -D__MICROLIB
+    - -D__UVISION_VERSION=542
+    - -D_RTE_
+    - -DSTM32WB5Mxx
+    - -DUSE_STM32WBXX_NUCLEO
+    - -DUSE_HAL_DRIVER
+    - -DENABLE_USART
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Core/Inc
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Drivers/STM32WBxx_HAL_Driver/Inc
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Drivers/STM32WBxx_HAL_Driver/Inc/Legacy
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Drivers/CMSIS/Device/ST/STM32WBxx/Include
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Drivers/CMSIS/Include
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/STM32_WPAN/App
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Middlewares/ST/STM32_WPAN
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Middlewares/ST/STM32_WPAN/ble
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Middlewares/ST/STM32_WPAN/ble/core
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Middlewares/ST/STM32_WPAN/ble/core/auto
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Middlewares/ST/STM32_WPAN/ble/core/template
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Middlewares/ST/STM32_WPAN/ble/svc/Inc
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Middlewares/ST/STM32_WPAN/ble/svc/Src
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Middlewares/ST/STM32_WPAN/ble/mesh/Inc
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Middlewares/ST/STM32_WPAN/ble/mesh/MeshModel/Inc
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Middlewares/ST/STM32_WPAN/interface/patterns/ble_thread
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Middlewares/ST/STM32_WPAN/interface/patterns/ble_thread/tl
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Middlewares/ST/STM32_WPAN/interface/patterns/ble_thread/shci
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Middlewares/ST/STM32_WPAN/utilities
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Utilities/lpm/tiny_lpm
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Utilities/sequencer
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Middlewares/ST/lib_nfc7/Common/inc
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Middlewares/ST/lib_nfc7/lib_NDEF/Core/inc
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/NFC7/Target
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Drivers/BSP/NFC07A1
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Drivers/BSP/Components/st25dvxxkc
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/Drivers/BSP/P-NUCLEO-WB55.Nucleo
+    - -IC:/kiwi/ble_mesh/dev_mesh/Ble_Mesh_Kp/MDK-ARM/RTE/_Ble_Mesh_Kp
+    - -IC:/Users/benoi/AppData/Local/Arm/Packs/ARM/CMSIS/6.2.0/CMSIS/Core/Include
+    - -isystem
+    - C:/Users/benoi/AppData/Local/Keil_v5/ARM/ARMCLANG/include
+
+Diagnostics:
+  UnusedIncludes: None
+  ClangTidy:
+    Remove: [misc-include-cleaner]
