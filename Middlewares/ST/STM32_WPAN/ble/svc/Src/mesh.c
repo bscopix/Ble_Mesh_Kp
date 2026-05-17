@@ -25,6 +25,7 @@
 #include "appli_config.h"
 #include "appli_config_client.h"
 #include "appli_nvm.h"
+#include "nfc_eeprom_mngt.h"
 #include "shci.h"
 
 
@@ -161,6 +162,12 @@ void MESH_Init(void)
   /* Checks if the node is already provisioned or not */
   if (BLEMesh_IsUnprovisioned() == MOBLE_TRUE)
   {
+    if (GetProvisioningResult() == PROVISION_RESULT_SUCCESS)
+    {
+      TRACE_I(TF_PROVISION,"Provisioning state mismatch at mesh init: mesh=unprovisioned, persisted=success; syncing to UNKNOWN\r\n");
+      ClearProvisioningBootRequest(PROVISION_RESULT_UNKNOWN);
+    }
+
     BLEMesh_InitUnprovisionedNode(); /* Initializes  Unprovisioned node */
 
     TRACE_I(TF_PROVISION,"Unprovisioned device \r\n");
@@ -171,6 +178,12 @@ void MESH_Init(void)
   }
   else
   {
+    if (GetProvisioningResult() != PROVISION_RESULT_SUCCESS)
+    {
+      TRACE_I(TF_PROVISION,"Provisioning state mismatch at mesh init: mesh=provisioned, persisted!=success; syncing to SUCCESS\r\n");
+      ClearProvisioningBootRequest(PROVISION_RESULT_SUCCESS);
+    }
+
     BLEMesh_InitProvisionedNode();  /* Initializes  Provisioned node */
     TRACE_I(TF_PROVISION,"Provisioned node \r\n");
     TRACE_I(TF_INIT,"Provisioned Node Address: [%04x] \n\r", BLEMesh_GetAddress());       

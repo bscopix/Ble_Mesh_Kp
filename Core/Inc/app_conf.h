@@ -699,6 +699,7 @@ typedef enum
 	CFG_TASK_TARGET_NOTIFICATION_ID,
 	CFG_TASK_SHOT_ADV_ID,
 	CFG_TASK_SHOT_ADV_CANCEL_ID,
+  CFG_TASK_P2P_CTRL_REQ_ID,
   /* USER CODE END CFG_Task_Id_With_HCI_Cmd_t */
   CFG_LAST_TASK_ID_WITH_HCICMD,                                               /**< Shall be LAST in the list */
 } CFG_Task_Id_With_HCI_Cmd_t;

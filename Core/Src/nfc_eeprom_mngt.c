@@ -44,13 +44,11 @@
 #define START_NAME_ZONE   0xE0
 #define START_CONFIG_ZONE 0x100
 #define START_PUBLIC_ZONE 0x140
+/* ST25DV04KC is 512 bytes (0x000..0x1FF). Keep rescue opcode in Zone 1 so it
+ * remains RF-writable while zones 2/3 stay protected. */
+#define START_BOOT_CTRL_ZONE NFC_EEPROM_ADDR_BOOT_RESCUE_OPCODE
 
 #define PROVISION_TIMEOUT_DEFAULT_S 120U
-#define CFG_RFU_PROVISION_FLAG_IDX        0U
-#define CFG_RFU_PROVISION_TIMEOUT_LSB_IDX 1U
-#define CFG_RFU_PROVISION_TIMEOUT_MSB_IDX 2U
-#define CFG_RFU_PROVISION_REASON_IDX      3U
-#define CFG_RFU_PROVISION_RESULT_IDX      4U
 
 #define I2C_LSB_PWD       0x00000000U
 #define I2C_MSB_PWD       0x00000000U
@@ -169,8 +167,9 @@ void EepromNFCInit(void)
 
     ST25DVxxKC_RF_PROT_ZONE_t TmpProtZone;
 
-    TmpProtZone.PasswdCtrl   = ST25DVXXKC_PROT_PASSWD1;
-    TmpProtZone.RWprotection = ST25DVXXKC_WRITE_PROT;
+    /* Keep zone1 RF-writable for rescue opcode updates from phone NFC tools. */
+    TmpProtZone.PasswdCtrl   = ST25DVXXKC_NOT_PROTECTED;
+    TmpProtZone.RWprotection = ST25DVXXKC_NO_PROT;
     ret = NFC07A1_NFCTAG_WriteRFZxSS(NFC07A1_NFCTAG_INSTANCE,
                                      ST25DVXXKC_PROT_ZONE1,
                                      TmpProtZone);
@@ -448,13 +447,13 @@ void SetMode(uint8_t Mode)
 
 bool IsProvisioningBootRequested(void)
 {
-  return (Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_FLAG_IDX] == PROVISION_BOOT_FLAG_ACTIVE);
+  return (Eeprom_mngt_Config.ProvisionBootFlag == PROVISION_BOOT_FLAG_ACTIVE);
 }
 
 uint16_t GetProvisioningTimeoutSeconds(void)
 {
-  uint8_t lsb = Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_TIMEOUT_LSB_IDX];
-  uint8_t msb = Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_TIMEOUT_MSB_IDX];
+  uint8_t lsb = Eeprom_mngt_Config.ProvisionTimeoutSecondsLsb;
+  uint8_t msb = Eeprom_mngt_Config.ProvisionTimeoutSecondsMsb;
   uint16_t timeout = (uint16_t)lsb | ((uint16_t)msb << 8);
 
   if ((lsb == 0xFFU) && (msb == 0xFFU))
@@ -472,13 +471,13 @@ uint16_t GetProvisioningTimeoutSeconds(void)
 
 uint8_t GetProvisioningReason(void)
 {
-  uint8_t reason = Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_REASON_IDX];
+  uint8_t reason = Eeprom_mngt_Config.ProvisionReason;
   return (reason == 0xFFU) ? PROVISION_REASON_NONE : reason;
 }
 
 uint8_t GetProvisioningResult(void)
 {
-  uint8_t result = Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_RESULT_IDX];
+  uint8_t result = Eeprom_mngt_Config.ProvisionResult;
   return (result == 0xFFU) ? PROVISION_RESULT_UNKNOWN : result;
 }
 
@@ -489,19 +488,19 @@ void SetProvisioningBootRequest(uint16_t timeoutSeconds, uint8_t reason)
     timeoutSeconds = PROVISION_TIMEOUT_DEFAULT_S;
   }
 
-  Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_FLAG_IDX] = PROVISION_BOOT_FLAG_ACTIVE;
-  Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_TIMEOUT_LSB_IDX] = (uint8_t)(timeoutSeconds & 0xFFU);
-  Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_TIMEOUT_MSB_IDX] = (uint8_t)((timeoutSeconds >> 8) & 0xFFU);
-  Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_REASON_IDX] = reason;
-  Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_RESULT_IDX] = PROVISION_RESULT_UNKNOWN;
+  Eeprom_mngt_Config.ProvisionBootFlag = PROVISION_BOOT_FLAG_ACTIVE;
+  Eeprom_mngt_Config.ProvisionTimeoutSecondsLsb = (uint8_t)(timeoutSeconds & 0xFFU);
+  Eeprom_mngt_Config.ProvisionTimeoutSecondsMsb = (uint8_t)((timeoutSeconds >> 8) & 0xFFU);
+  Eeprom_mngt_Config.ProvisionReason = reason;
+  Eeprom_mngt_Config.ProvisionResult = PROVISION_RESULT_UNKNOWN;
 
   WriteMngtConfigToEeprom();
 }
 
 void ClearProvisioningBootRequest(uint8_t result)
 {
-  Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_FLAG_IDX] = PROVISION_BOOT_FLAG_NONE;
-  Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_RESULT_IDX] = result;
+  Eeprom_mngt_Config.ProvisionBootFlag = PROVISION_BOOT_FLAG_NONE;
+  Eeprom_mngt_Config.ProvisionResult = result;
 
   WriteMngtConfigToEeprom();
 }
@@ -541,6 +540,36 @@ void StopProvisioningRuntimeSession(uint8_t result)
 
   ProvisioningRuntimeSessionActive = false;
   ClearProvisioningBootRequest(result);
+}
+
+uint8_t GetNfcBootOpcode(void)
+{
+  uint8_t opcode = NFC_BOOT_OPCODE_NONE;
+
+  if (NFC07A1_NFCTAG_ReadData(NFC07A1_NFCTAG_INSTANCE,
+                              &opcode,
+                              START_BOOT_CTRL_ZONE,
+                              1U) != NFCTAG_OK)
+  {
+    return NFC_BOOT_OPCODE_NONE;
+  }
+
+  return opcode;
+}
+
+void SetNfcBootOpcode(uint8_t opcode)
+{
+  while (NFC07A1_NFCTAG_WriteData(NFC07A1_NFCTAG_INSTANCE,
+                                  &opcode,
+                                  START_BOOT_CTRL_ZONE,
+                                  1U) != NFCTAG_OK)
+  {
+  }
+}
+
+void ClearNfcBootOpcode(void)
+{
+  SetNfcBootOpcode(NFC_BOOT_OPCODE_NONE);
 }
 
 void readEepromContent(void)
@@ -654,6 +683,11 @@ static void EepromMngtInitialisation(void)
     cfg_tmp.ResetTimerNotFinish = 0;
     cfg_tmp.BleCongig           = BLE_CONFIG_SERVER;
     cfg_tmp.Mode                = MODE_SOLEMS;
+    cfg_tmp.ProvisionBootFlag         = PROVISION_BOOT_FLAG_NONE;
+    cfg_tmp.ProvisionTimeoutSecondsLsb = (uint8_t)(PROVISION_TIMEOUT_DEFAULT_S & 0xFFU);
+    cfg_tmp.ProvisionTimeoutSecondsMsb = (uint8_t)((PROVISION_TIMEOUT_DEFAULT_S >> 8) & 0xFFU);
+    cfg_tmp.ProvisionReason           = PROVISION_REASON_NONE;
+    cfg_tmp.ProvisionResult           = PROVISION_RESULT_UNKNOWN;
     memset(cfg_tmp.RFU, 0xFF, sizeof(cfg_tmp.RFU));
 
     cfg_tmp.Crc = HAL_CRC_Calculate(&hcrc,

@@ -61,7 +61,12 @@ typedef struct
 	uint8_t	ResetTimerNotFinish;
 	uint8_t BleCongig; //can be BLE_CONFIG_CLIENT, BLE_CONFIG_SERVER, BLE_CONFIG_GATEWAY
 	uint8_t Mode; //CTOR 0x01 PSD 0x02
-	uint8_t RFU[19]; //19 to be aligned
+	uint8_t ProvisionBootFlag;
+	uint8_t ProvisionTimeoutSecondsLsb;
+	uint8_t ProvisionTimeoutSecondsMsb;
+	uint8_t ProvisionReason;
+	uint8_t ProvisionResult;
+	uint8_t RFU[14]; // keep struct alignment and backward-compatible layout
 	uint32_t	Crc; //must be placed at the end of typedef
 }Eeprom_mngt_Config_t;
 
@@ -86,6 +91,14 @@ enum {
 
 #define PROVISION_BOOT_FLAG_NONE   0x00U
 #define PROVISION_BOOT_FLAG_ACTIVE 0xA5U
+
+/* NFC boot rescue opcode values (stored outside CRC-protected config struct). */
+#define NFC_BOOT_OPCODE_NONE               0xFFU
+#define NFC_BOOT_OPCODE_MESH_FACTORY_RESET 0xA5U
+
+/* Byte address in ST25DV04KC EEPROM (Zone 1) used for one-shot rescue command.
+ * 0x00D8 == 216 decimal, RF-writable for field recovery without a button. */
+#define NFC_EEPROM_ADDR_BOOT_RESCUE_OPCODE 0x00D8U
 
 
 typedef struct
@@ -124,6 +137,9 @@ extern void StartProvisioningRuntimeSession(uint16_t timeoutSeconds);
 extern bool IsProvisioningRuntimeSessionActive(void);
 extern bool IsProvisioningRuntimeSessionTimedOut(void);
 extern void StopProvisioningRuntimeSession(uint8_t result);
+extern uint8_t GetNfcBootOpcode(void);
+extern void SetNfcBootOpcode(uint8_t opcode);
+extern void ClearNfcBootOpcode(void);
 
 
 

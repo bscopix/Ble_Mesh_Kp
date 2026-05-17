@@ -358,6 +358,8 @@ uint8_t a_ManufData[14] = {sizeof(a_ManufData)-1,
 #endif /* P2P_SERVER6 != 0 */
 
 /* USER CODE BEGIN PV */
+static uint16_t LastHandledDisconnectHandle = 0xFFFFU;
+static uint32_t LastHandledDisconnectTick = 0U;
 
 /* USER CODE END PV */
 
@@ -370,6 +372,9 @@ static void Adv_Request(APP_BLE_ConnStatus_t NewStatus);
 static void Adv_Cancel(void);
 static void Adv_Cancel_Req(void);
 static void Switch_OFF_GPIO(void);
+static uint8_t APP_BLE_ShouldForwardMeshEvents(void);
+static uint8_t APP_BLE_IsMeshOwningAdvertising(void);
+static void APP_BLE_HandleDisconnectEvent(uint16_t connection_handle, uint8_t reason, uint8_t source_svcctl);
 #if (L2CAP_REQUEST_NEW_CONN_PARAM != 0)
 static void BLE_SVC_L2CAP_Conn_Update(uint16_t ConnectionHandle);
 static void Connection_Interval_Update_Req(void);
@@ -389,6 +394,10 @@ void additionnal_adv_Cancel(void);
 void APP_BLE_Init(void)
 {
   SHCI_CmdStatus_t status;
+  uint8_t boot_opcode;
+  uint8_t provision_result;
+  uint8_t provisioning_boot_requested;
+  uint32_t reset_flags;
 #if (RADIO_ACTIVITY_EVENT != 0)
   tBleStatus ret = BLE_STATUS_INVALID_PARAMS;
 #endif /* RADIO_ACTIVITY_EVENT != 0 */
@@ -402,6 +411,50 @@ void APP_BLE_Init(void)
 	
 	// Calculer la longueur r�elle de la cha�ne SSID + pr�fixe
   a_LocalName_length = ssid_length+1; // +1 pour le pr�fixe
+
+  boot_opcode = GetNfcBootOpcode();
+  if (boot_opcode != NFC_BOOT_OPCODE_NONE)
+  {
+    APP_DBG_MSG("==>> NFC boot opcode detected: 0x%02x\n", boot_opcode);
+
+    if (boot_opcode == NFC_BOOT_OPCODE_MESH_FACTORY_RESET)
+    {
+      ClearNfcBootOpcode();
+
+      if (MOBLE_FAILED(Appli_MeshEraseProvisioningStorage()))
+      {
+        APP_DBG_MSG("==>> NFC boot rescue failed: mesh NVM erase error\n");
+      }
+      else
+      {
+        APP_DBG_MSG("==>> NFC boot rescue: mesh provisioning storage erased\n");
+      }
+
+      ClearProvisioningBootRequest(PROVISION_RESULT_UNKNOWN);
+    }
+    else
+    {
+      APP_DBG_MSG("==>> NFC boot opcode unknown, clearing\n");
+      ClearNfcBootOpcode();
+    }
+  }
+
+  provision_result = GetProvisioningResult();
+  provisioning_boot_requested = (uint8_t)(IsProvisioningBootRequested() ? 1U : 0U);
+  reset_flags = RCC->CSR;
+  APP_DBG_MSG("==>> Reset flags: CSR=0x%08x PIN=%u POR=%u SFT=%u IWDG=%u WWDG=%u LPWR=%u\n",
+              reset_flags,
+              (reset_flags & RCC_CSR_PINRSTF) ? 1U : 0U,
+              (reset_flags & RCC_CSR_BORRSTF) ? 1U : 0U,
+              (reset_flags & RCC_CSR_SFTRSTF) ? 1U : 0U,
+              (reset_flags & RCC_CSR_IWDGRSTF) ? 1U : 0U,
+              (reset_flags & RCC_CSR_WWDGRSTF) ? 1U : 0U,
+              (reset_flags & RCC_CSR_LPWRRSTF) ? 1U : 0U);
+  __HAL_RCC_CLEAR_RESET_FLAGS();
+  APP_DBG_MSG("==>> Boot provisioning state: %s (result=%u boot_req=%u)\n",
+              (provision_result == PROVISION_RESULT_SUCCESS) ? "PROVISIONED" : "UNPROVISIONED_OR_UNKNOWN",
+              provision_result,
+              provisioning_boot_requested);
   /* USER CODE END APP_BLE_Init_1 */
   SHCI_C2_Ble_Init_Cmd_Packet_t ble_init_cmd_packet =
   {
@@ -609,15 +662,27 @@ void APP_BLE_Init(void)
    * (same principle as BLE_MeshLightingPRFNode).
    */
 #ifdef DISABLE_MESH_AUTOSTART
-  if (!IsProvisioningRuntimeSessionActive())
+  {
+    const uint8_t mesh_owns_advertising = APP_BLE_IsMeshOwningAdvertising();
+
+    if (mesh_owns_advertising == 0U)
   {
     Adv_Request(APP_BLE_FAST_ADV);
-    /* Start additional beacon only after primary discoverable advertising is requested. */
-    additionnal_adv();
+
+    if (BleApplicationContext.Device_Connection_Status == APP_BLE_FAST_ADV)
+    {
+      /* Start additional beacon only after primary discoverable advertising is active. */
+      additionnal_adv();
+    }
+    else
+    {
+      APP_DBG_MSG("==>> Legacy primary advertising did not start at boot, skip additional beacon\n");
+    }
   }
   else
   {
-    APP_DBG_MSG("==>> Mesh provisioning runtime active: legacy GAP advertising disabled\n");
+      APP_DBG_MSG("==>> Mesh owns advertising: legacy GAP advertising disabled\n");
+    }
   }
   /* USER CODE BEGIN APP_BLE_Init_2 */
 #else
@@ -632,12 +697,16 @@ void APP_BLE_Init(void)
 SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
 {
   hci_event_pckt    *p_event_pckt;
+  uint8_t           event_code;
   evt_le_meta_event *p_meta_evt;
   evt_blecore_aci   *p_blecore_evt;
   uint8_t           Tx_phy, Rx_phy;
   tBleStatus        ret = BLE_STATUS_INVALID_PARAMS;
   hci_le_connection_complete_event_rp0        *p_connection_complete_event;
   hci_disconnection_complete_event_rp0        *p_disconnection_complete_event;
+  uint16_t          disconnection_handle = 0U;
+  uint8_t           disconnection_reason = 0U;
+  uint8_t           disconnection_captured = 0U;
   hci_le_phy_update_complete_event_rp0        *p_evt_le_phy_update_complete;
 #if (CFG_DEBUG_APP_TRACE != 0)
   hci_le_connection_update_complete_event_rp0 *p_connection_update_complete_event;
@@ -648,71 +717,47 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
   /* USER CODE END SVCCTL_App_Notification */
 
   p_event_pckt = (hci_event_pckt*) ((hci_uart_pckt *) p_Pckt)->data;
+  event_code = p_event_pckt->evt;
 
+  if (event_code == HCI_DISCONNECTION_COMPLETE_EVT_CODE)
+  {
+    APP_DBG_MSG("[APP][DISC_EVT] SVCCTL_App_Notification reached\n");
+  }
+
+  if (event_code == HCI_DISCONNECTION_COMPLETE_EVT_CODE)
+  {
+    p_disconnection_complete_event = (hci_disconnection_complete_event_rp0 *) p_event_pckt->data;
+    disconnection_handle = p_disconnection_complete_event->Connection_Handle;
+    disconnection_reason = p_disconnection_complete_event->Reason;
+    disconnection_captured = 1U;
+  }
+
+  /* In legacy unprovisioned mode, keep behavior close to reference (no mesh callback side effects). */
 #ifndef DISABLE_MESH_AUTOSTART
-  /* In mesh autostart mode, always forward BLE events to mesh dispatcher. */
   HCI_Event_CB(p_Pckt);
 #if (LOW_POWER_FEATURE == 1)
   UTIL_SEQ_SetTask(1 << CFG_TASK_MESH_REQ_ID, CFG_SCH_PRIO_0);
 #endif
-
-  return (SVCCTL_UserEvtFlowEnable);
-#endif
-
-  /* Keep Mesh event processing active even when booting in legacy GATT mode. */
-  HCI_Event_CB(p_Pckt);
-
+#else
+  if (APP_BLE_ShouldForwardMeshEvents() != 0U)
+  {
+    HCI_Event_CB(p_Pckt);
 #if (LOW_POWER_FEATURE == 1)
-  UTIL_SEQ_SetTask(1 << CFG_TASK_MESH_REQ_ID, CFG_SCH_PRIO_0);
+    UTIL_SEQ_SetTask(1 << CFG_TASK_MESH_REQ_ID, CFG_SCH_PRIO_0);
+#endif
+  }
 #endif
 
-  switch (p_event_pckt->evt)
+  switch (event_code)
   {
     case HCI_DISCONNECTION_COMPLETE_EVT_CODE:
     {
-      p_disconnection_complete_event = (hci_disconnection_complete_event_rp0 *) p_event_pckt->data;
-
-      if (p_disconnection_complete_event->Connection_Handle == BleApplicationContext.BleApplicationContext_legacy.connectionHandle)
+      if (disconnection_captured != 0U)
       {
-        BleApplicationContext.BleApplicationContext_legacy.connectionHandle = 0;
-        BleApplicationContext.Device_Connection_Status = APP_BLE_IDLE;
-        APP_DBG_MSG(">>== HCI_DISCONNECTION_COMPLETE_EVT_CODE\n");
-        APP_DBG_MSG("     - Connection Handle:   0x%x\n     - Reason:    0x%x\n\r",
-                    p_disconnection_complete_event->Connection_Handle,
-                    p_disconnection_complete_event->Reason);
-
-        /* USER CODE BEGIN EVT_DISCONN_COMPLETE_2 */
-
-        /* USER CODE END EVT_DISCONN_COMPLETE_2 */
+        APP_BLE_HandleDisconnectEvent(disconnection_handle,
+                                      disconnection_reason,
+                                      0U);
       }
-
-      /* USER CODE BEGIN EVT_DISCONN_COMPLETE_1 */
-
-      /* USER CODE END EVT_DISCONN_COMPLETE_1 */
-
-      /* Keep legacy advertising available after any disconnect in concurrent mode. */
-#ifdef DISABLE_MESH_AUTOSTART
-  APP_DBG_MSG("==>> Disconnect path: runtime=%u status=%u\n",
-      IsProvisioningRuntimeSessionActive() ? 1U : 0U,
-      (unsigned int)BleApplicationContext.Device_Connection_Status);
-      if (!IsProvisioningRuntimeSessionActive())
-      {
-        Adv_Request(APP_BLE_FAST_ADV);
-        /* Keep post-disconnect discoverability consistent with boot behavior. */
-        additionnal_adv();
-      }
-      else
-      {
-        APP_DBG_MSG("==>> Skip legacy advertising restart during Mesh provisioning session\n");
-      }
-#endif
-
-      /**
-       * SPECIFIC to P2P Server APP
-       */
-      HandleNotification.P2P_Evt_Opcode = PEER_DISCON_HANDLE_EVT;
-      HandleNotification.ConnectionHandle = BleApplicationContext.BleApplicationContext_legacy.connectionHandle;
-      P2PS_APP_Notification(&HandleNotification);
 
       /* USER CODE BEGIN EVT_DISCONN_COMPLETE */
 
@@ -788,6 +833,7 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
           HW_TS_Stop(BleApplicationContext.Advertising_mgr_timer_Id);
 
           APP_DBG_MSG(">>== HCI_LE_CONNECTION_COMPLETE_SUBEVT_CODE - Connection handle: 0x%x\n", p_connection_complete_event->Connection_Handle);
+          APP_DBG_MSG("     - Uptime: %u ms\n", HAL_GetTick());
           APP_DBG_MSG("     - Connection established with Central: @:%02x:%02x:%02x:%02x:%02x:%02x\n",
                       p_connection_complete_event->Peer_Address[5],
                       p_connection_complete_event->Peer_Address[4],
@@ -965,6 +1011,128 @@ APP_BLE_ConnStatus_t APP_BLE_Get_Server_Connection_Status(void)
   return BleApplicationContext.Device_Connection_Status;
 }
 
+void APP_BLE_NotifyDisconnection(uint16_t connection_handle, uint8_t reason)
+{
+  APP_BLE_HandleDisconnectEvent(connection_handle, reason, 1U);
+}
+
+static void APP_BLE_HandleDisconnectEvent(uint16_t connection_handle, uint8_t reason, uint8_t source_svcctl)
+{
+  const uint32_t now = HAL_GetTick();
+
+  if ((LastHandledDisconnectHandle == connection_handle) &&
+      ((uint32_t)(now - LastHandledDisconnectTick) < 100U))
+  {
+    APP_DBG_MSG("==>> Duplicate disconnect event ignored (handle=0x%x src=%u)\n",
+                connection_handle,
+                source_svcctl);
+    return;
+  }
+
+  LastHandledDisconnectHandle = connection_handle;
+  LastHandledDisconnectTick = now;
+
+  if ((BleApplicationContext.BleApplicationContext_legacy.connectionHandle != 0U) &&
+      (connection_handle != BleApplicationContext.BleApplicationContext_legacy.connectionHandle))
+  {
+    APP_DBG_MSG(">>== Disconnect handle mismatch: evt=0x%x ctx=0x%x\n",
+                connection_handle,
+                BleApplicationContext.BleApplicationContext_legacy.connectionHandle);
+  }
+
+  /* Always release connection context on disconnect to keep restart path deterministic. */
+  BleApplicationContext.BleApplicationContext_legacy.connectionHandle = 0;
+  BleApplicationContext.Device_Connection_Status = APP_BLE_IDLE;
+
+  APP_DBG_MSG(">>== HCI_DISCONNECTION_COMPLETE_EVT_CODE (src=%u)\n", source_svcctl);
+  APP_DBG_MSG("     - Connection Handle:   0x%x\n     - Reason:    0x%x\n\r",
+              connection_handle,
+              reason);
+  APP_DBG_MSG("     - Uptime: %u ms\n", HAL_GetTick());
+
+#ifdef DISABLE_MESH_AUTOSTART
+  {
+    const uint8_t runtime_active = (uint8_t)(IsProvisioningRuntimeSessionActive() ? 1U : 0U);
+    const uint8_t provision_result = GetProvisioningResult();
+    const uint8_t mesh_owns_advertising = APP_BLE_IsMeshOwningAdvertising();
+
+    APP_DBG_MSG("==>> Disconnect path: runtime=%u result=%u status=%u\n",
+                runtime_active,
+                provision_result,
+                (unsigned int)BleApplicationContext.Device_Connection_Status);
+
+    if (mesh_owns_advertising == 0U)
+    {
+      Adv_Request(APP_BLE_FAST_ADV);
+
+      if (BleApplicationContext.Device_Connection_Status != APP_BLE_FAST_ADV)
+      {
+        APP_DBG_MSG("==>> Legacy advertising restart failed, retry once\n");
+        Adv_Request(APP_BLE_FAST_ADV);
+      }
+
+      if (BleApplicationContext.Device_Connection_Status == APP_BLE_FAST_ADV)
+      {
+        /* Keep post-disconnect discoverability consistent with boot behavior. */
+        additionnal_adv();
+      }
+      else
+      {
+        APP_DBG_MSG("==>> Legacy advertising still not active after retry\n");
+      }
+    }
+    else
+    {
+      APP_DBG_MSG("==>> Skip legacy advertising restart: Mesh owns advertising\n");
+    }
+  }
+#endif
+
+  /* SPECIFIC to P2P Server APP */
+  HandleNotification.P2P_Evt_Opcode = PEER_DISCON_HANDLE_EVT;
+  HandleNotification.ConnectionHandle = connection_handle;
+  P2PS_APP_Notification(&HandleNotification);
+}
+
+static uint8_t APP_BLE_IsMeshOwningAdvertising(void)
+{
+  const uint8_t runtime_active = (uint8_t)(IsProvisioningRuntimeSessionActive() ? 1U : 0U);
+  const uint8_t provision_result = GetProvisioningResult();
+
+  if (runtime_active != 0U)
+  {
+    return 1U;
+  }
+
+  if (provision_result == PROVISION_RESULT_SUCCESS)
+  {
+    if (BLEMesh_IsUnprovisioned() != MOBLE_FALSE)
+    {
+      APP_DBG_MSG("==>> Provisioning state mismatch: persisted success, mesh reports unprovisioned (keeping mesh ownership)\n");
+    }
+
+    /* Persisted provisioned state keeps mesh ownership; do not auto-clear or reset. */
+    return 1U;
+  }
+
+  return 0U;
+}
+
+static uint8_t APP_BLE_ShouldForwardMeshEvents(void)
+{
+  if (IsProvisioningRuntimeSessionActive())
+  {
+    return 1U;
+  }
+
+  if (GetProvisioningResult() == PROVISION_RESULT_SUCCESS)
+  {
+    return 1U;
+  }
+
+  return 0U;
+}
+
 /* USER CODE BEGIN FD*/
 
 /* USER CODE END FD*/
@@ -993,13 +1161,13 @@ static void Ble_Hci_Gap_Gatt_Init(void)
   uint16_t a_appearance[1] = {BLE_CFG_GAP_APPEARANCE};
   tBleStatus ret = BLE_STATUS_INVALID_PARAMS;
   /* USER CODE BEGIN Ble_Hci_Gap_Gatt_Init*/
-	
-	//a_srd_bd_addr[0] = LL_FLASH_GetUDN();
+
+  //a_srd_bd_addr[0] = LL_FLASH_GetUDN();
   //a_srd_bd_addr[1] = 0xC000; /* The two upper bits shall be set to 1 */
-	
-	a_srd_bd_addr[0] = (uint32_t) GetMacAdd();
-	a_srd_bd_addr[1] = (uint32_t) (GetMacAdd()>>32);
-	
+
+  a_srd_bd_addr[0] = (uint32_t) GetMacAdd();
+  a_srd_bd_addr[1] = (uint32_t) (GetMacAdd()>>32);
+
 
   /* USER CODE END Ble_Hci_Gap_Gatt_Init*/
 
@@ -1315,8 +1483,16 @@ static void Adv_Request(APP_BLE_ConnStatus_t NewStatus)
     /* 0x0C/0x12 can happen when Mesh stack already controls advertising state. */
     if ((ret == 0x0CU) || (ret == 0x12U))
     {
-      APP_DBG_MSG("==>> aci_gap_set_discoverable - mesh already controls advertising (result: 0x%x)\n", ret);
-      BleApplicationContext.Device_Connection_Status = NewStatus;
+      if (APP_BLE_IsMeshOwningAdvertising() != 0U)
+      {
+        APP_DBG_MSG("==>> aci_gap_set_discoverable - mesh already controls advertising (result: 0x%x)\n", ret);
+        BleApplicationContext.Device_Connection_Status = NewStatus;
+      }
+      else
+      {
+        APP_DBG_MSG("==>> aci_gap_set_discoverable - unexpected conflict in legacy mode (result: 0x%x)\n", ret);
+        BleApplicationContext.Device_Connection_Status = APP_BLE_IDLE;
+      }
     }
     else
     {
@@ -1430,7 +1606,7 @@ void update_adv_shot_data(void) {
 
 void additionnal_adv(void)
 {
- tBleStatus ret = BLE_STATUS_INVALID_PARAMS;
+/* tBleStatus ret = BLE_STATUS_INVALID_PARAMS;
 
 // MAC address
     uint64_t mac_address = GetMacAdd();
@@ -1460,12 +1636,12 @@ ret = aci_gap_additional_beacon_start (
   
     // Configuaration of initial value of beacon
     update_adv_shot_data();
-		HW_TS_Start(BleApplicationContext.Advertising_additionnal_timer_Id, SHOT_ADV_TIMEOUT);
-	}
+		HW_TS_Start(BleApplicationContext.Advertising_additionnal_timer_Id, SHOT_ADV_TIMEOUT);*/
+}
 
 void additionnal_adv_Cancel(void)
 {
-	tBleStatus ret = BLE_STATUS_INVALID_PARAMS;
+/*	tBleStatus ret = BLE_STATUS_INVALID_PARAMS;
   HW_TS_Stop(BleApplicationContext.Advertising_additionnal_timer_Id);
 	ret = aci_gap_additional_beacon_stop();
 	if (ret != BLE_STATUS_SUCCESS)
@@ -1475,7 +1651,7 @@ void additionnal_adv_Cancel(void)
   else
   {
       APP_DBG_MSG("** STOP ACI_GAP_ADDITIONNAL_BEACON_ADVERTISING **  \r\n\r");
-	}
+	}*/
 }
 /* USER CODE END FD_LOCAL_FUNCTION */
 
@@ -1509,7 +1685,14 @@ static void Adv_Cancel(void)
 
   /* USER CODE BEGIN Adv_Cancel_2 */
 #ifdef DISABLE_MESH_AUTOSTART
-	Adv_Request(APP_BLE_LP_ADV); //set to low power advertising
+  if (APP_BLE_IsMeshOwningAdvertising() == 0U)
+  {
+	Adv_Request(APP_BLE_LP_ADV); // set to low power advertising
+  }
+  else
+  {
+    APP_DBG_MSG("==>> Skip low-power advertising restart: Mesh owns advertising\n");
+  }
 #endif
   /* USER CODE END Adv_Cancel_2 */
 
@@ -1612,20 +1795,6 @@ static void Adv_additionnal_Cancel_Req(void)
 void hci_notify_asynch_evt(void* p_Data)
 {
   UTIL_SEQ_SetTask(1 << CFG_TASK_HCI_ASYNCH_EVT_ID, CFG_SCH_PRIO_0);
-
-  return;
-}
-
-void hci_cmd_resp_release(uint32_t Flag)
-{
-  UTIL_SEQ_SetEvt(1 << CFG_IDLEEVT_HCI_CMD_EVT_RSP_ID);
-
-  return;
-}
-
-void hci_cmd_resp_wait(uint32_t Timeout)
-{
-  UTIL_SEQ_WaitEvt(1 << CFG_IDLEEVT_HCI_CMD_EVT_RSP_ID);
 
   return;
 }

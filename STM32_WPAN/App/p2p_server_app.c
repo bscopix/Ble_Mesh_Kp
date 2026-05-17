@@ -27,6 +27,7 @@
 #include "stm32_seq.h"
 #include "nfc_eeprom_mngt.h"
 #include "ble_mesh.h"
+#include "appli_mesh.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -48,12 +49,15 @@
 #define P2P_CTRL_OPCODE_GET_PROVISIONING_STATUS     0x09U
 #define P2P_CTRL_OPCODE_ENTER_PROVISIONING          0x0AU
 #define P2P_CTRL_OPCODE_CANCEL_PROVISIONING         0x0BU
+#define P2P_CTRL_OPCODE_MESH_HARD_FACTORY_RESET     0x0CU
 
 #define P2P_CTRL_STATUS_OK                          0x00U
 #define P2P_CTRL_STATUS_BAD_LENGTH                  0x01U
 #define P2P_CTRL_STATUS_BAD_STATE                   0x02U
 #define P2P_CTRL_STATUS_BUSY                        0x03U
 #define P2P_CTRL_STATUS_INTERNAL_ERROR              0x04U
+
+#define P2P_CTRL_MAX_WRITE_LEN                      20U
 
 /* USER CODE END PD */
 
@@ -64,6 +68,9 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
+static uint8_t P2P_CtrlWritePending;
+static uint8_t P2P_CtrlWriteLen;
+static uint8_t P2P_CtrlWritePayload[P2P_CTRL_MAX_WRITE_LEN];
 
 /* USER CODE END PV */
 
@@ -76,6 +83,7 @@ static void P2PS_Send_Target_Notification(void);
 static void P2PS_Send_Ctl_Response(uint8_t request_opcode, uint8_t status, const uint8_t *payload, uint8_t payload_len);
 static void P2PS_Build_Provisioning_Status(uint8_t *status_payload4);
 static void P2PS_Handle_Mesh_Control_Write(const uint8_t *payload, uint8_t length);
+static void P2PS_Process_Pending_Ctrl_Write(void);
 uint8_t Tx_data[2];
 	uint8_t tab_emul[14];
 	uint8_t RetValToRead;
@@ -126,10 +134,33 @@ void P2PS_STM_App_Notification(P2PS_STM_App_Notification_evt_t *pNotification)
         if ((opcode == P2P_CTRL_OPCODE_MESH_DEPROVISION)
           || (opcode == P2P_CTRL_OPCODE_GET_PROVISIONING_STATUS)
             || (opcode == P2P_CTRL_OPCODE_ENTER_PROVISIONING)
-            || (opcode == P2P_CTRL_OPCODE_CANCEL_PROVISIONING))
+            || (opcode == P2P_CTRL_OPCODE_CANCEL_PROVISIONING)
+            || (opcode == P2P_CTRL_OPCODE_MESH_HARD_FACTORY_RESET))
         {
-          P2PS_Handle_Mesh_Control_Write(pNotification->DataTransfered.pPayload,
-                                         pNotification->DataTransfered.Length);
+          if (pNotification->DataTransfered.Length <= P2P_CTRL_MAX_WRITE_LEN)
+          {
+            memcpy(P2P_CtrlWritePayload,
+                   pNotification->DataTransfered.pPayload,
+                   pNotification->DataTransfered.Length);
+            P2P_CtrlWriteLen = pNotification->DataTransfered.Length;
+            P2P_CtrlWritePending = 1U;
+            UTIL_SEQ_SetTask(1 << CFG_TASK_P2P_CTRL_REQ_ID, CFG_SCH_PRIO_3);
+          }
+          else
+          {
+            APP_DBG_MSG("P2P ctrl write dropped: length=%u > %u\r\n",
+                        pNotification->DataTransfered.Length,
+                        (unsigned int)P2P_CTRL_MAX_WRITE_LEN);
+          }
+          break;
+        }
+
+        if ((IsProvisioningRuntimeSessionActive() == true) ||
+            (GetProvisioningResult() == PROVISION_RESULT_SUCCESS))
+        {
+          APP_DBG_MSG("Legacy P2P opcode ignored while Mesh/Proxy active: op=0x%02x len=%u\r\n",
+                      opcode,
+                      pNotification->DataTransfered.Length);
           break;
         }
       }
@@ -294,9 +325,12 @@ void P2PS_APP_Init(void)
   UTIL_SEQ_RegTask( 1<< CFG_TASK_RAW_NOTIFICATION_ID, UTIL_SEQ_RFU, P2PS_Send_Raw_Notification );
   UTIL_SEQ_RegTask( 1<< CFG_TASK_SHOT_NOTIFICATION_ID, UTIL_SEQ_RFU, P2PS_Send_Shot_Notification );
   UTIL_SEQ_RegTask( 1<< CFG_TASK_TARGET_NOTIFICATION_ID, UTIL_SEQ_RFU, P2PS_Send_Target_Notification );
+  UTIL_SEQ_RegTask( 1<< CFG_TASK_P2P_CTRL_REQ_ID, UTIL_SEQ_RFU, P2PS_Process_Pending_Ctrl_Write );
 
   P2P_Server_App_Context.ShotNotification_Status=0; 
 	P2P_Server_App_Context.RawNotification_Status=0;
+  P2P_CtrlWritePending = 0U;
+  P2P_CtrlWriteLen = 0U;
 /* USER CODE END P2PS_APP_Init */
   return;
 }
@@ -304,15 +338,45 @@ void P2PS_APP_Init(void)
 /* USER CODE BEGIN FD */
 void storeRawData(uint8_t *data, int lenght )
 {
-	memcpy(P2P_Server_App_Context.RawTargetToNotification,data,lenght);
+  if ((data == NULL) || (lenght <= 0))
+  {
+    return;
+  }
+
+  if ((uint32_t)lenght > (uint32_t)NOTIFY_RAW_SIZE)
+  {
+    lenght = NOTIFY_RAW_SIZE;
+  }
+
+	memcpy(P2P_Server_App_Context.RawTargetToNotification, data, (size_t)lenght);
 }
 void storeShotData(uint8_t *data, int lenght )
 {
-	memcpy(P2P_Server_App_Context.ShotToNotification,data,lenght);
+  if ((data == NULL) || (lenght <= 0))
+  {
+    return;
+  }
+
+  if ((uint32_t)lenght > (uint32_t)NOTIFY_SHOT_SIZE)
+  {
+    lenght = NOTIFY_SHOT_SIZE;
+  }
+
+	memcpy(P2P_Server_App_Context.ShotToNotification, data, (size_t)lenght);
 }
 void storeTargetData(uint8_t *data, int lenght )
 {
-	memcpy(P2P_Server_App_Context.TargetToNotification,data,lenght);
+  if ((data == NULL) || (lenght <= 0))
+  {
+    return;
+  }
+
+  if ((uint32_t)lenght > (uint32_t)NOTIFY_TARGET_SIZE)
+  {
+    lenght = NOTIFY_TARGET_SIZE;
+  }
+
+	memcpy(P2P_Server_App_Context.TargetToNotification, data, (size_t)lenght);
 }
 void P2PS_APP_RAW_Action(void)
 {
@@ -419,6 +483,31 @@ static void P2PS_Build_Provisioning_Status(uint8_t *status_payload4)
   status_payload4[3] = (uint8_t)((unicast >> 8) & 0xFFU);
 }
 
+static void P2PS_Process_Pending_Ctrl_Write(void)
+{
+  uint8_t payload_len;
+  uint8_t payload_copy[P2P_CTRL_MAX_WRITE_LEN];
+
+  if (P2P_CtrlWritePending == 0U)
+  {
+    return;
+  }
+
+  payload_len = P2P_CtrlWriteLen;
+  if ((payload_len == 0U) || (payload_len > P2P_CTRL_MAX_WRITE_LEN))
+  {
+    P2P_CtrlWritePending = 0U;
+    P2P_CtrlWriteLen = 0U;
+    return;
+  }
+
+  memcpy(payload_copy, P2P_CtrlWritePayload, payload_len);
+  P2P_CtrlWritePending = 0U;
+  P2P_CtrlWriteLen = 0U;
+
+  P2PS_Handle_Mesh_Control_Write(payload_copy, payload_len);
+}
+
 static void P2PS_Handle_Mesh_Control_Write(const uint8_t *payload, uint8_t length)
 {
   uint8_t opcode;
@@ -520,6 +609,30 @@ static void P2PS_Handle_Mesh_Control_Write(const uint8_t *payload, uint8_t lengt
       ClearProvisioningBootRequest(PROVISION_RESULT_UNKNOWN);
       P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_OK, NULL, 0U);
       APP_DBG_MSG("Provisioning boot request canceled via GATT\r\n");
+      break;
+
+    case P2P_CTRL_OPCODE_MESH_HARD_FACTORY_RESET:
+      if (declared_payload_len != 0U)
+      {
+        P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_BAD_LENGTH, NULL, 0U);
+        break;
+      }
+
+      ClearProvisioningBootRequest(PROVISION_RESULT_UNKNOWN);
+      ClearNfcBootOpcode();
+
+      mesh_result = Appli_MeshEraseProvisioningStorage();
+      if (MOBLE_FAILED(mesh_result))
+      {
+        P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_INTERNAL_ERROR, NULL, 0U);
+        APP_DBG_MSG("MESH_HARD_FACTORY_RESET failed: erase result=%d\r\n", mesh_result);
+        break;
+      }
+
+      P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_OK, NULL, 0U);
+      APP_DBG_MSG("MESH_HARD_FACTORY_RESET accepted: rebooting node\r\n");
+      HAL_Delay(100U);
+      NVIC_SystemReset();
       break;
 
     default:

@@ -199,6 +199,28 @@ MOBLEUINT8 lowPowerNodeApiTimer_Id;
 MOBLEUINT8 pPropertyId[4];
 static uint8_t ProvisioningConfigActivitySeen = 0U;
 static uint8_t ProvisioningTimeoutNotified = 0U;
+static uint8_t ProvisioningSessionCommitPending = 0U;
+
+static MOBLE_RESULT Appli_EraseProvisioningStorage(void)
+{
+  MOBLE_RESULT erase_res = PalNvmErase(PRVN_NVM_BASE_OFFSET, 4U);
+
+  if (erase_res == MOBLE_RESULT_SUCCESS)
+  {
+    TRACE_I(TF_PROVISION,"NVM erased\r\n");
+  }
+  else
+  {
+    TRACE_I(TF_PROVISION,"NVM erase failed: %d\r\n", erase_res);
+  }
+
+  return erase_res;
+}
+
+MOBLE_RESULT Appli_MeshEraseProvisioningStorage(void)
+{
+  return Appli_EraseProvisioningStorage();
+}
 
 /********************* Application configuration **************************/
 #if defined(__GNUC__) || defined(__IAR_SYSTEMS_ICC__) || defined(__CC_ARM)
@@ -430,8 +452,8 @@ static void Mesh_Task()
   {
     UnprovisionInProgress = 0;
     AppliNvm_ClearModelState();
-    PalNvmErase(PRVN_NVM_BASE_OFFSET, 4);
-    TRACE_I(TF_PROVISION,"NVM erased\r\n");      
+    Appli_EraseProvisioningStorage();
+    ClearProvisioningBootRequest(PROVISION_RESULT_UNKNOWN);
     TRACE_I(TF_PROVISION,"Device is unprovisioned by application \r\n");      
   }
     
@@ -450,6 +472,16 @@ static void Mesh_Task()
 */ 
 static void Appli_Task()
 {
+  if (ProvisioningSessionCommitPending != 0U)
+  {
+    ProvisioningSessionCommitPending = 0U;
+
+    if (IsProvisioningRuntimeSessionActive())
+    {
+      StopProvisioningRuntimeSession(PROVISION_RESULT_SUCCESS);
+    }
+  }
+
   Appli_Process();
   
 #if (APPLI_OPTIM == 0)
@@ -653,8 +685,12 @@ void Appli_BleGattDisconnectionCompleteCb(void)
       (BLEMesh_IsUnprovisioned() == MOBLE_FALSE) &&
       (ProvisioningConfigActivitySeen != 0U))
   {
-    ClearProvisioningBootRequest(PROVISION_RESULT_SUCCESS);
-    TRACE_I(TF_PROVISION,"Provisioning session completed (configured/disconnect), manual power cycle required for GATT mode\r\n");
+    if (ProvisioningSessionCommitPending == 0U)
+    {
+      ProvisioningSessionCommitPending = 1U;
+      TRACE_I(TF_PROVISION,"Provisioning session completed (configured/disconnect), manual power cycle required for GATT mode\r\n");
+      UTIL_SEQ_SetTask( 1<<CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
+    }
   }
 }
 
@@ -879,11 +915,11 @@ void Appli_CheckForUnprovision(void)
       BLEMesh_StopAdvScan();
       HAL_Delay(10);
 
-      PalNvmErase(PRVN_NVM_BASE_OFFSET, 4);
-      TRACE_I(TF_PROVISION,"NVM erased\r\n");      
+      Appli_EraseProvisioningStorage();
       
       BLEMesh_Unprovision();
       AppliNvm_ClearModelState();     
+      ClearProvisioningBootRequest(PROVISION_RESULT_UNKNOWN);
       TRACE_I(TF_PROVISION,"Device is unprovisioned by application \r\n");      
       t = Clock_Time();
       while ((Clock_Time() - t) < FLASH_ERASE_TIME)
@@ -931,8 +967,8 @@ void Appli_Unprovision(void)
     BLEMesh_StopAdvScan();
     HAL_Delay(10);
       
-    PalNvmErase(PRVN_NVM_BASE_OFFSET, 4);
-    TRACE_I(TF_PROVISION,"NVM erased\r\n");      
+    Appli_EraseProvisioningStorage();
+    ClearProvisioningBootRequest(PROVISION_RESULT_UNKNOWN);
   
     TRACE_I(TF_PROVISION,"Device is unprovisioned by application \r\n");      
 
@@ -1099,8 +1135,8 @@ void BLEMesh_UnprovisionCallback(MOBLEUINT8 reason)
     
   TRACE_I(TF_PROVISION,"Device is unprovisioned by application \r\n");      
 
-  PalNvmErase(PRVN_NVM_BASE_OFFSET, 4);
-  TRACE_I(TF_PROVISION,"NVM erased\r\n");      
+  Appli_EraseProvisioningStorage();
+  ClearProvisioningBootRequest(PROVISION_RESULT_UNKNOWN);
   TRACE_I(TF_PROVISION,"Reset Device\r\n");      
 
   HAL_Delay(100);
@@ -1201,7 +1237,6 @@ void BLEMesh_ProvisionCallback(void)
 #ifdef ENABLE_AUTH_TYPE_OUTPUT_OOB
   PrvngInProcess = 0;
 #endif
-  ClearProvisioningBootRequest(PROVISION_RESULT_SUCCESS);
   TRACE_I(TF_PROVISION,"Device is provisioned by provisioner \r\n");
   TRACE_I(TF_PROVISION,"Waiting configuration (manual power cycle required for GATT mode)\r\n");
   
@@ -1220,11 +1255,14 @@ void BLEMesh_ProvisionCallback(void)
 void BLEMesh_ConfigurationCallback(void)
 {
   ProvisioningConfigActivitySeen = 1U;
-  ClearProvisioningBootRequest(PROVISION_RESULT_SUCCESS);
-
   if (IsProvisioningRuntimeSessionActive())
   {
-    TRACE_I(TF_PROVISION,"Provisioning session completed (configured), manual power cycle required for GATT mode\r\n");
+    if (ProvisioningSessionCommitPending == 0U)
+    {
+      ProvisioningSessionCommitPending = 1U;
+      TRACE_I(TF_PROVISION,"Provisioning session completed (configured), manual power cycle required for GATT mode\r\n");
+      UTIL_SEQ_SetTask( 1<<CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
+    }
   }
 
 #if (LOW_POWER_FEATURE == 1)

@@ -108,6 +108,7 @@ MOBLE_RESULT Appli_LedStateCtrlCb(MOBLEUINT16 ctrl);
 
 void Appli_CheckForUnprovision(void);
 void Appli_Unprovision(void);
+MOBLE_RESULT Appli_MeshEraseProvisioningStorage(void);
 void Appli_Process(void);
 void Appli_LedCtrl(void);
 void Appli_Init(MOBLEUINT8 *flag);

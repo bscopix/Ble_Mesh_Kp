@@ -31,12 +31,50 @@
 #include "flash_driver.h"
 
 #include "mesh_cfg.h"
+#include "appli_nvm.h"
 
 /* Private define ------------------------------------------------------------*/
 
 /* Private variables ---------------------------------------------------------*/
 
 /* Private functions ---------------------------------------------------------*/
+static MOBLEUINT32 PalNvmManagedStartAddress(void)
+{
+  MOBLEUINT32 managed_start = (MOBLEUINT32)NVM_BASE;
+  MOBLEUINT32 prv_base = (MOBLEUINT32)PRVN_NVM_BASE_OFFSET;
+
+  if ((prv_base != 0U) && (prv_base < managed_start))
+  {
+    managed_start = prv_base;
+  }
+
+  return managed_start;
+}
+
+static MOBLE_RESULT PalNvmValidateRange(MOBLEUINT32 address, MOBLEUINT32 size)
+{
+  const MOBLEUINT32 managed_start = PalNvmManagedStartAddress();
+  const MOBLEUINT32 managed_end = (MOBLEUINT32)NVM_BASE + (MOBLEUINT32)NVM_SIZE;
+  const uint64_t access_end = (uint64_t)address + (uint64_t)size;
+
+  if (size == 0U)
+  {
+    return MOBLE_RESULT_FALSE;
+  }
+
+  if (address < managed_start)
+  {
+    return MOBLE_RESULT_INVALIDARG;
+  }
+
+  if (access_end > (uint64_t)managed_end)
+  {
+    return MOBLE_RESULT_INVALIDARG;
+  }
+
+  return MOBLE_RESULT_SUCCESS;
+}
+
 /**
   * @brief  Gets the page of a given address
   * @param  Addr: Address of the FLASH Memory
@@ -88,19 +126,8 @@ MOBLE_RESULT PalNvmRead(MOBLEUINT32 address,
   
 //  printf("MoblePalNvmRead >>>\r\n");  
 
-  if (address > (NVM_BASE + NVM_SIZE))
-  {
-    result = MOBLE_RESULT_INVALIDARG;
-  }
-  else if (size == 0)
-  {
-    result = MOBLE_RESULT_FALSE;
-  }
-  else if ((address + size) > (NVM_BASE + NVM_SIZE))
-  {
-    result = MOBLE_RESULT_INVALIDARG;
-  }
-  else
+  result = PalNvmValidateRange(address, size);
+  if (result == MOBLE_RESULT_SUCCESS)
   {
     memcpy(buf, (void *)(address), size);
   }
@@ -131,15 +158,7 @@ MOBLE_RESULT PalNvmCompare(MOBLEUINT32 address,
   {
     result = MOBLE_RESULT_INVALIDARG;
   }
-  else if (address > (NVM_BASE + NVM_SIZE))
-  {
-    result = MOBLE_RESULT_INVALIDARG;
-  }
-  else if (size == 0)
-  {
-    result = MOBLE_RESULT_FALSE;
-  }
-  else if ((address + size) > (NVM_BASE + NVM_SIZE))
+  else if (PalNvmValidateRange(address, size) != MOBLE_RESULT_SUCCESS)
   {
     result = MOBLE_RESULT_INVALIDARG;
   }
@@ -182,6 +201,18 @@ MOBLE_RESULT PalNvmCompare(MOBLEUINT32 address,
 MOBLE_RESULT PalNvmErase(MOBLEUINT32 address,
                          MOBLEUINT8 nb_pages)
 {
+  MOBLEUINT32 erase_size = (MOBLEUINT32)nb_pages * FLASH_PAGE_SIZE;
+
+  if (nb_pages == 0U)
+  {
+    return MOBLE_RESULT_INVALIDARG;
+  }
+
+  if (PalNvmValidateRange(address, erase_size) != MOBLE_RESULT_SUCCESS)
+  {
+    return MOBLE_RESULT_INVALIDARG;
+  }
+
   if(FD_EraseSectors(GetPage(address), nb_pages) != 0)
   {
     return MOBLE_RESULT_FAIL;
@@ -203,15 +234,7 @@ MOBLE_RESULT PalNvmWrite(MOBLEUINT32 address,
 {
   MOBLE_RESULT result = MOBLE_RESULT_SUCCESS;
 
-  if (address > (NVM_BASE + NVM_SIZE))
-  {
-    result = MOBLE_RESULT_INVALIDARG;
-  }
-  else if (size == 0)
-  {
-    result = MOBLE_RESULT_FALSE;
-  }
-  else if ((address + size) > (NVM_BASE + NVM_SIZE))
+  if (PalNvmValidateRange(address, size) != MOBLE_RESULT_SUCCESS)
   {
     result = MOBLE_RESULT_INVALIDARG;
   }

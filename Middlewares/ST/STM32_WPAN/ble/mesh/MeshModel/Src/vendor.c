@@ -96,6 +96,13 @@ MOBLE_RESULT Vendor_WriteLocalDataCb(MODEL_MessageHeader_t *pmsgParams,
 {
   
   MOBLE_COMMAND_STATUS status = STATUS_SUCCESS;
+
+  if ((pmsgParams == NULL) || (length == 0U) || ((data == NULL) && (length > 0U)))
+  {
+    return MOBLE_RESULT_INVALIDARG;
+  }
+
+  ResponseBuffer[0] = command;
   
   /* Traces for the Data */
   uint16_t idx = 0;
@@ -211,6 +218,18 @@ MOBLE_RESULT Vendor_ReadLocalDataCb(MODEL_MessageHeader_t *pmsgParams,
  
  MOBLE_RESULT status = MOBLE_RESULT_SUCCESS;
  MOBLEUINT8 getBuff[5];
+
+ if ((pmsgParams == NULL) || ((data == NULL) && (length > 0U)))
+ {
+   return MOBLE_RESULT_INVALIDARG;
+ }
+
+ if (length == 0U)
+ {
+   return MOBLE_RESULT_INVALIDARG;
+ }
+
+ ResponseBuffer[0] = command;
  
  /* Traces for the Data */
   TRACE_M(TF_VENDOR_M,
@@ -373,6 +392,11 @@ MOBLE_RESULT Vendor_OnResponseDataCb(MODEL_MessageHeader_t *pmsgParam,
                                      MOBLEUINT32 dataLength, 
                                      MOBLEBOOL response)
 {
+  if ((pmsgParam == NULL) || (pRxData == NULL) || (dataLength == 0U))
+  {
+    return MOBLE_RESULT_INVALIDARG;
+  }
+
    MOBLEUINT32 timeStampRcv;
    MOBLEUINT8 subCmd = pRxData[0];
    MOBLEUINT16 hitcmdcount = 0;
@@ -694,6 +718,16 @@ MOBLE_RESULT VendorModel_PID1_ProcessMessageCb(MODEL_MessageHeader_t *pmsgParams
   MOBLE_RESULT result = MOBLE_RESULT_SUCCESS;
   MOBLEUINT8 command;
   MOBLEBOOL cmd_response;
+
+  if (pmsgParams == NULL)
+  {
+    return MOBLE_RESULT_INVALIDARG;
+  }
+
+  if ((pRxData == NULL) && (dataLength > 0U))
+  {
+    return MOBLE_RESULT_INVALIDARG;
+  }
     
   /*tClockTime delay_t = Clock_Time();*/
   
@@ -732,7 +766,7 @@ MOBLE_RESULT VendorModel_PID1_ProcessMessageCb(MODEL_MessageHeader_t *pmsgParams
     { /* Response Packet is received */
        TRACE_I(TF_VENDOR_M,"Response received from remote node \n\r");
 
-       Vendor_OnResponseDataCb(pmsgParams, command, pRxData, dataLength, MOBLE_FALSE);
+       result = Vendor_OnResponseDataCb(pmsgParams, command, pRxData, dataLength, MOBLE_FALSE);
     }
     else if ( (cmd_response == MOBLE_TRUE) && (opcode & VENDOR_CMD_READ_nWRITE))
     { /* Read Packet is received */

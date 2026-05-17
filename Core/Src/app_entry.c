@@ -33,6 +33,10 @@
 #include "dbg_trace.h"
 #include "shci.h"
 #include "otp.h"
+#include "appli_mesh.h"
+#include "appli_nvm.h"
+#include "pal_nvm.h"
+#include "mesh_cfg.h"
 
 /* Private includes -----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -41,6 +45,9 @@
 
 /* Private typedef -----------------------------------------------------------*/
 extern RTC_HandleTypeDef hrtc;
+extern const void *mobleNvmBase;
+extern const void *appNvmBase;
+extern const void *prvsnr_data;
 
 /* USER CODE BEGIN PTD */
 
@@ -129,6 +136,20 @@ void MX_APPE_Config(void)
 
 void MX_APPE_Init(void)
 {
+#if defined(STM32WB15xx)
+  uint32_t last_user_flash_address = ((READ_BIT(FLASH->SFR, FLASH_SFR_SFSA) >> FLASH_SFR_SFSA_Pos) << 11) + FLASH_BASE;
+  const uint32_t app_nvm_size = 2048U;
+  const uint32_t prvn_nvm_page_size = 2048U;
+#elif defined(STM32WB55xx) || defined(STM32WB5Mxx)
+  uint32_t last_user_flash_address = ((READ_BIT(FLASH->SFR, FLASH_SFR_SFSA) >> FLASH_SFR_SFSA_Pos) << 12) + FLASH_BASE;
+  const uint32_t app_nvm_size = 4096U;
+  const uint32_t prvn_nvm_page_size = 4096U;
+#else
+  uint32_t last_user_flash_address = FLASH_BASE + FLASH_SIZE;
+  const uint32_t app_nvm_size = 4096U;
+  const uint32_t prvn_nvm_page_size = 4096U;
+#endif
+
   System_Init();       /**< System initialization */
 
   SystemPower_Config(); /**< Configure the system Power Mode */
@@ -137,6 +158,16 @@ void MX_APPE_Init(void)
 
 /* USER CODE BEGIN APPE_Init_1 */
 	APPD_Init();
+
+  /* Keep Mesh library NVM pages in the user flash area, as in reference project. */
+  mobleNvmBase = (const void *)(last_user_flash_address - NVM_SIZE);
+  appNvmBase   = (const void *)(last_user_flash_address - NVM_SIZE - app_nvm_size);
+  prvsnr_data  = (const void *)(last_user_flash_address - NVM_SIZE - app_nvm_size - prvn_nvm_page_size);
+
+  TRACE_I(TF_INIT,"NVM bases: mesh=0x%08lx app=0x%08lx prv=0x%08lx\r\n",
+          (unsigned long)mobleNvmBase,
+          (unsigned long)appNvmBase,
+          (unsigned long)prvsnr_data);
 /* USER CODE END APPE_Init_1 */
   appe_Tl_Init();	/* Initialize all transport layers */
 
@@ -629,25 +660,23 @@ void UTIL_SEQ_Idle(void)
   */
 void UTIL_SEQ_EvtIdle(UTIL_SEQ_bm_t task_id_bm, UTIL_SEQ_bm_t evt_waited_bm)
 {
-  UTIL_SEQ_Run(UTIL_SEQ_DEFAULT);
+  UTIL_SEQ_bm_t run_mask;
+
+  (void)evt_waited_bm;
+
+  /* While waiting for command responses, only run transport async tasks.
+   * This avoids re-entering application/mesh tasks that can issue nested
+   * blocking HCI commands and corrupt sequencer context. */
+  run_mask = ((UTIL_SEQ_bm_t)1U << CFG_TASK_HCI_ASYNCH_EVT_ID)
+           | ((UTIL_SEQ_bm_t)1U << CFG_TASK_SYSTEM_HCI_ASYNCH_EVT_ID);
+
+  UTIL_SEQ_Run((~task_id_bm) & run_mask);
   return;
 }
 
 void shci_notify_asynch_evt(void* pdata)
 {
   UTIL_SEQ_SetTask(1<<CFG_TASK_SYSTEM_HCI_ASYNCH_EVT_ID, CFG_SCH_PRIO_0);
-  return;
-}
-
-void shci_cmd_resp_release(uint32_t flag)
-{
-  UTIL_SEQ_SetEvt(1<< CFG_IDLEEVT_SYSTEM_HCI_CMD_EVT_RSP_ID);
-  return;
-}
-
-void shci_cmd_resp_wait(uint32_t timeout)
-{
-  UTIL_SEQ_WaitEvt(1<< CFG_IDLEEVT_SYSTEM_HCI_CMD_EVT_RSP_ID);
   return;
 }
 

@@ -160,6 +160,8 @@ void SVCCTL_Init( void )
 __WEAK void SVCCTL_SvcInit(void)
 {
   const uint8_t provisioning_boot_requested = (uint8_t)IsProvisioningBootRequested();
+  const uint8_t provisioning_success_persisted =
+      (uint8_t)((GetProvisioningResult() == PROVISION_RESULT_SUCCESS) ? 1U : 0U);
 
   BAS_Init();
 
@@ -199,6 +201,14 @@ __WEAK void SVCCTL_SvcInit(void)
   {
     APP_DBG_MSG("[SVCCTL] Provisioning boot: full service initialization\r\n");
   }
+  else if (provisioning_success_persisted != 0U)
+  {
+    APP_DBG_MSG("[SVCCTL] Provisioned boot: enabling Mesh runtime for Proxy availability\r\n");
+  }
+  else
+  {
+    APP_DBG_MSG("[SVCCTL] Unprovisioned/unknown boot: legacy GATT advertising path\r\n");
+  }
 
 #ifndef DISABLE_MESH_AUTOSTART
   MESH_Init();
@@ -208,6 +218,11 @@ __WEAK void SVCCTL_SvcInit(void)
     StartProvisioningRuntimeSession(GetProvisioningTimeoutSeconds());
     /* Consume one-shot boot request to avoid permanent Mesh autostart on next reboot. */
     ClearProvisioningBootRequest(PROVISION_RESULT_UNKNOWN);
+    MESH_Init();
+  }
+  else if (provisioning_success_persisted != 0U)
+  {
+    /* Node already provisioned: start Mesh at normal reboot so GATT Proxy stays reachable. */
     MESH_Init();
   }
   else

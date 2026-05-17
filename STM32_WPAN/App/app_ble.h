@@ -69,6 +69,7 @@ typedef enum
 /* Exported functions ---------------------------------------------*/
 void APP_BLE_Init(void);
 APP_BLE_ConnStatus_t APP_BLE_Get_Server_Connection_Status(void);
+void APP_BLE_NotifyDisconnection(uint16_t connection_handle, uint8_t reason);
 
 /* USER CODE BEGIN EF */
 
