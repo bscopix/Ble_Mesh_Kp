@@ -71,6 +71,22 @@ enum {
 	MODE_PSD = 2
 };
 
+enum {
+	PROVISION_REASON_NONE = 0,
+	PROVISION_REASON_GATT = 1,
+	PROVISION_REASON_NFC = 2
+};
+
+enum {
+	PROVISION_RESULT_UNKNOWN = 0,
+	PROVISION_RESULT_SUCCESS = 1,
+	PROVISION_RESULT_FAIL = 2,
+	PROVISION_RESULT_TIMEOUT = 3
+};
+
+#define PROVISION_BOOT_FLAG_NONE   0x00U
+#define PROVISION_BOOT_FLAG_ACTIVE 0xA5U
+
 
 typedef struct
 {
@@ -98,6 +114,16 @@ extern uint8_t GetMode();
 extern void SetMode(uint8_t Mode);
 extern void EepromNFCInit();
 extern void UpdateDesignWithEEpromValue();
+extern bool IsProvisioningBootRequested(void);
+extern uint16_t GetProvisioningTimeoutSeconds(void);
+extern uint8_t GetProvisioningReason(void);
+extern uint8_t GetProvisioningResult(void);
+extern void SetProvisioningBootRequest(uint16_t timeoutSeconds, uint8_t reason);
+extern void ClearProvisioningBootRequest(uint8_t result);
+extern void StartProvisioningRuntimeSession(uint16_t timeoutSeconds);
+extern bool IsProvisioningRuntimeSessionActive(void);
+extern bool IsProvisioningRuntimeSessionTimedOut(void);
+extern void StopProvisioningRuntimeSession(uint8_t result);
 
 
 

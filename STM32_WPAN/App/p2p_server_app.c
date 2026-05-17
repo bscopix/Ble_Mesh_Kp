@@ -26,6 +26,7 @@
 #include "p2p_server_app.h"
 #include "stm32_seq.h"
 #include "nfc_eeprom_mngt.h"
+#include "ble_mesh.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -42,6 +43,17 @@
 
 /* Private defines ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define P2P_CTRL_OPCODE_MESH_DEPROVISION            0x08U
+#define P2P_CTRL_OPCODE_GET_PROVISIONING_STATUS     0x09U
+#define P2P_CTRL_OPCODE_ENTER_PROVISIONING          0x0AU
+#define P2P_CTRL_OPCODE_CANCEL_PROVISIONING         0x0BU
+
+#define P2P_CTRL_STATUS_OK                          0x00U
+#define P2P_CTRL_STATUS_BAD_LENGTH                  0x01U
+#define P2P_CTRL_STATUS_BAD_STATE                   0x02U
+#define P2P_CTRL_STATUS_BUSY                        0x03U
+#define P2P_CTRL_STATUS_INTERNAL_ERROR              0x04U
 
 /* USER CODE END PD */
 
@@ -61,6 +73,9 @@
 static void P2PS_Send_Raw_Notification(void);
 static void P2PS_Send_Shot_Notification(void);
 static void P2PS_Send_Target_Notification(void);
+static void P2PS_Send_Ctl_Response(uint8_t request_opcode, uint8_t status, const uint8_t *payload, uint8_t payload_len);
+static void P2PS_Build_Provisioning_Status(uint8_t *status_payload4);
+static void P2PS_Handle_Mesh_Control_Write(const uint8_t *payload, uint8_t length);
 uint8_t Tx_data[2];
 	uint8_t tab_emul[14];
 	uint8_t RetValToRead;
@@ -104,6 +119,21 @@ void P2PS_STM_App_Notification(P2PS_STM_App_Notification_evt_t *pNotification)
 
     case P2PS_STM_WRITE_EVT:
 /* USER CODE BEGIN P2PS_STM_WRITE_EVT */
+      if (pNotification->DataTransfered.Length > 0U)
+      {
+        uint8_t opcode = pNotification->DataTransfered.pPayload[0];
+
+        if ((opcode == P2P_CTRL_OPCODE_MESH_DEPROVISION)
+          || (opcode == P2P_CTRL_OPCODE_GET_PROVISIONING_STATUS)
+            || (opcode == P2P_CTRL_OPCODE_ENTER_PROVISIONING)
+            || (opcode == P2P_CTRL_OPCODE_CANCEL_PROVISIONING))
+        {
+          P2PS_Handle_Mesh_Control_Write(pNotification->DataTransfered.pPayload,
+                                         pNotification->DataTransfered.Length);
+          break;
+        }
+      }
+
       if(pNotification->DataTransfered.pPayload[0] == 0x00){ /* Direct connection to UART_TX */
     	  memcpy(Tx_data, &pNotification->DataTransfered.pPayload[1],2);
 				APP_DBG_MSG("Send Command %02x %02x %02x\r\n",
@@ -128,8 +158,8 @@ void P2PS_STM_App_Notification(P2PS_STM_App_Notification_evt_t *pNotification)
 
 			if(len > 1)
 			{
-				char newSsid[16 + 1];  // 16 caractères max + '\0'
-				uint8_t nameLen = (uint8_t)(len - 1); // on enlève l’octet d’opcode
+				char newSsid[16 + 1];  // 16 caractï¿½res max + '\0'
+				uint8_t nameLen = (uint8_t)(len - 1); // on enlï¿½ve lï¿½octet dï¿½opcode
 
 				if(nameLen > 16)
 					nameLen = 16;
@@ -139,7 +169,7 @@ void P2PS_STM_App_Notification(P2PS_STM_App_Notification_evt_t *pNotification)
 							 &pNotification->DataTransfered.pPayload[1],
 							 nameLen);
 
-				SetSSIDName(newSsid);  // écrit en EEPROM + met à jour le CRC de la zone NAME
+				SetSSIDName(newSsid);  // ï¿½crit en EEPROM + met ï¿½ jour le CRC de la zone NAME
 
 				APP_DBG_MSG("Set SSID via BLE: %s\r\n", newSsid);
 			}
@@ -340,5 +370,161 @@ void P2PS_Send_Target_Notification(void)
     APP_DBG_MSG("-- P2P APPLICATION SERVER : CAN'T INFORM CLIENT -  NOTIFICATION DISABLED\r\n ");
    }
   return;
+}
+
+static void P2PS_Send_Ctl_Response(uint8_t request_opcode, uint8_t status, const uint8_t *payload, uint8_t payload_len)
+{
+  uint8_t response[7U];
+  uint8_t tx_len = (uint8_t)(3U + payload_len);
+
+  response[0] = (uint8_t)(request_opcode | 0x80U);
+  response[1] = status;
+  response[2] = payload_len;
+
+  if ((payload_len > 0U) && (payload != NULL))
+  {
+    memcpy(&response[3], payload, payload_len);
+  }
+
+  P2PS_STM_App_Update_Char(P2P_WRITE_CHAR_UUID, response, tx_len);
+}
+
+static void P2PS_Build_Provisioning_Status(uint8_t *status_payload4)
+{
+  uint16_t unicast;
+  uint8_t is_unprovisioned;
+  uint8_t runtime_active;
+  uint8_t provision_result;
+
+  runtime_active = (uint8_t)(IsProvisioningRuntimeSessionActive() ? 1U : 0U);
+  is_unprovisioned = (uint8_t)((BLEMesh_IsUnprovisioned() == MOBLE_TRUE) ? 1U : 0U);
+
+  status_payload4[0] = runtime_active;
+  status_payload4[1] = (is_unprovisioned != 0U) ? 0x00U : 0x01U;
+
+  /* In legacy GATT boot mode Mesh may be inactive; use persisted result fallback. */
+  provision_result = GetProvisioningResult();
+  if ((status_payload4[0] == 0x00U) && (provision_result == PROVISION_RESULT_SUCCESS))
+  {
+    status_payload4[1] = 0x01U;
+  }
+
+  unicast = (uint16_t)BLEMesh_GetAddress();
+  if (status_payload4[1] == 0x00U)
+  {
+    unicast = 0U;
+  }
+
+  status_payload4[2] = (uint8_t)(unicast & 0xFFU);
+  status_payload4[3] = (uint8_t)((unicast >> 8) & 0xFFU);
+}
+
+static void P2PS_Handle_Mesh_Control_Write(const uint8_t *payload, uint8_t length)
+{
+  uint8_t opcode;
+  uint8_t declared_payload_len;
+  uint8_t actual_payload_len;
+  uint8_t status_payload[4U];
+  uint16_t timeout_s;
+  MOBLE_RESULT mesh_result;
+
+  if ((payload == NULL) || (length == 0U))
+  {
+    return;
+  }
+
+  opcode = payload[0];
+
+  if (length < 2U)
+  {
+    P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_BAD_LENGTH, NULL, 0U);
+    return;
+  }
+
+  declared_payload_len = payload[1];
+  actual_payload_len = (uint8_t)(length - 2U);
+
+  if (declared_payload_len != actual_payload_len)
+  {
+    P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_BAD_LENGTH, NULL, 0U);
+    return;
+  }
+
+  switch (opcode)
+  {
+    case P2P_CTRL_OPCODE_MESH_DEPROVISION:
+      if (declared_payload_len != 0U)
+      {
+        P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_BAD_LENGTH, NULL, 0U);
+        break;
+      }
+
+      if (BLEMesh_IsUnprovisioned() == MOBLE_TRUE)
+      {
+        P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_BAD_STATE, NULL, 0U);
+        APP_DBG_MSG("MESH_DEPROVISION rejected: node already unprovisioned\r\n");
+        break;
+      }
+
+      if (BLEMesh_TrsptIsBusyState() == MOBLE_TRUE)
+      {
+        P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_BUSY, NULL, 0U);
+        APP_DBG_MSG("MESH_DEPROVISION rejected: mesh transport busy\r\n");
+        break;
+      }
+
+      mesh_result = BLEMesh_Unprovision();
+      if (MOBLE_FAILED(mesh_result))
+      {
+        P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_INTERNAL_ERROR, NULL, 0U);
+        APP_DBG_MSG("MESH_DEPROVISION failed: result=%d\r\n", mesh_result);
+        break;
+      }
+
+      ClearProvisioningBootRequest(PROVISION_RESULT_UNKNOWN);
+      P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_OK, NULL, 0U);
+      APP_DBG_MSG("MESH_DEPROVISION accepted: rebooting node\r\n");
+      HAL_Delay(100U);
+      NVIC_SystemReset();
+      break;
+
+    case P2P_CTRL_OPCODE_GET_PROVISIONING_STATUS:
+      P2PS_Build_Provisioning_Status(status_payload);
+      P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_OK, status_payload, sizeof(status_payload));
+      APP_DBG_MSG("Provisioning status requested: mode=%02x prov=%02x addr=%02x%02x\r\n",
+                  status_payload[0], status_payload[1], status_payload[3], status_payload[2]);
+      break;
+
+    case P2P_CTRL_OPCODE_ENTER_PROVISIONING:
+      if (declared_payload_len != 2U)
+      {
+        P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_BAD_LENGTH, NULL, 0U);
+        break;
+      }
+
+      timeout_s = (uint16_t)payload[2] | ((uint16_t)payload[3] << 8);
+      SetProvisioningBootRequest(timeout_s, PROVISION_REASON_GATT);
+      P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_OK, NULL, 0U);
+      APP_DBG_MSG("Provisioning boot requested via GATT (timeout=%u s)\r\n", timeout_s);
+      HAL_Delay(100U);
+      NVIC_SystemReset();
+      break;
+
+    case P2P_CTRL_OPCODE_CANCEL_PROVISIONING:
+      if (declared_payload_len != 0U)
+      {
+        P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_BAD_LENGTH, NULL, 0U);
+        break;
+      }
+
+      ClearProvisioningBootRequest(PROVISION_RESULT_UNKNOWN);
+      P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_OK, NULL, 0U);
+      APP_DBG_MSG("Provisioning boot request canceled via GATT\r\n");
+      break;
+
+    default:
+      P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_INTERNAL_ERROR, NULL, 0U);
+      break;
+  }
 }
 /* USER CODE END FD_LOCAL_FUNCTIONS*/

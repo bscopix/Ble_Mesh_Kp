@@ -50,12 +50,13 @@
 */
 
 #define ENABLE_PB_ADV
-/* Disabled for coexistence with custom P2P GATT advertising on this board. */
-//#define ENABLE_PB_GATT
+/* Enable PB-GATT so mobile provisioners can provision over a GATT link. */
+#define ENABLE_PB_GATT
 
-/* Keep Mesh code linked but do not start Mesh automatically at boot. */
+/* Keep legacy GATT startup enabled while allowing Mesh stack to run in parallel. */
 #define DISABLE_MESH_AUTOSTART
 //#define ENABLE_PUB_KEY_TYPE_OOB
+/* Keep No OOB as compatibility fallback for provisioners that cannot complete Output OOB flow. */
 #define ENABLE_AUTH_TYPE_NO_OOB
 //#define ENABLE_AUTH_TYPE_STATIC_OOB
 //#define ENABLE_AUTH_TYPE_OUTPUT_OOB

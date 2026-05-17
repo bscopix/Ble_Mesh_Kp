@@ -84,6 +84,7 @@ static void APPE_SysUserEvtRx(void * pPayload);
 static void APPE_SysEvtReadyProcessing(void * pPayload);
 static void APPE_SysEvtError(void * pPayload);
 static void Init_Rtc(void);
+static const char *APPE_GetStackTypeString(uint8_t stackType);
 
 /* BLE Mesh library compatibility: map legacy permit_read API to current allow/deny APIs. */
 tBleStatus aci_gatt_permit_read(uint16_t Connection_Handle,
@@ -356,6 +357,45 @@ static void APPE_SysStatusNot(SHCI_TL_CmdStatus_t status)
   return;
 }
 
+static const char *APPE_GetStackTypeString(uint8_t stackType)
+{
+  switch (stackType)
+  {
+    case INFO_STACK_TYPE_BLE_FULL:
+      return "BLE_FULL";
+    case INFO_STACK_TYPE_BLE_HCI:
+      return "BLE_HCI";
+    case INFO_STACK_TYPE_BLE_LIGHT:
+      return "BLE_LIGHT";
+    case INFO_STACK_TYPE_BLE_BEACON:
+      return "BLE_BEACON";
+    case INFO_STACK_TYPE_BLE_BASIC:
+      return "BLE_BASIC";
+    case INFO_STACK_TYPE_BLE_FULL_EXT_ADV:
+      return "BLE_FULL_EXT_ADV";
+    case INFO_STACK_TYPE_BLE_HCI_EXT_ADV:
+      return "BLE_HCI_EXT_ADV";
+    case INFO_STACK_TYPE_BLE_THREAD_FTD_STATIC:
+      return "BLE_THREAD_FTD_STATIC";
+    case INFO_STACK_TYPE_BLE_THREAD_FTD_DYNAMIC:
+      return "BLE_THREAD_FTD_DYNAMIC";
+    case INFO_STACK_TYPE_BLE_THREAD_LIGHT_DYNAMIC:
+      return "BLE_THREAD_LIGHT_DYNAMIC";
+    case INFO_STACK_TYPE_BLE_ZIGBEE_FFD_STATIC:
+      return "BLE_ZIGBEE_FFD_STATIC";
+    case INFO_STACK_TYPE_BLE_ZIGBEE_RFD_STATIC:
+      return "BLE_ZIGBEE_RFD_STATIC";
+    case INFO_STACK_TYPE_BLE_ZIGBEE_FFD_DYNAMIC:
+      return "BLE_ZIGBEE_FFD_DYNAMIC";
+    case INFO_STACK_TYPE_BLE_ZIGBEE_RFD_DYNAMIC:
+      return "BLE_ZIGBEE_RFD_DYNAMIC";
+    case INFO_STACK_TYPE_BLE_MAC_STATIC:
+      return "BLE_MAC_STATIC";
+    default:
+      return "UNKNOWN";
+  }
+}
+
 /**
  * The type of the payload for a system user event is tSHCI_UserEvtRxParam
  * When the system event is both :
@@ -379,6 +419,7 @@ static void APPE_SysUserEvtRx(void * pPayload)
     SHCI_GetWirelessFwInfo(&WirelessInfo);
     APP_DBG_MSG("Wireless Firmware version %d.%d.%d\n", WirelessInfo.VersionMajor, WirelessInfo.VersionMinor, WirelessInfo.VersionSub);
     APP_DBG_MSG("Wireless Firmware build %d\n", WirelessInfo.VersionReleaseType);
+    APP_DBG_MSG("Wireless Stack type 0x%02x (%s)\n", WirelessInfo.StackType, APPE_GetStackTypeString(WirelessInfo.StackType));
     APP_DBG_MSG("FUS version %d.%d.%d\n", WirelessInfo.FusVersionMajor, WirelessInfo.FusVersionMinor, WirelessInfo.FusVersionSub);
 
     APP_DBG_MSG(">>== SHCI_SUB_EVT_CODE_READY\n\r");

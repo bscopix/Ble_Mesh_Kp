@@ -123,6 +123,7 @@ void Appli_ProvisionerInit(void);
 void Appli_StartProvisionerMode(MOBLEUINT8 mode);
 
 void Appli_GetPublicationParamsCb(model_publicationparams_t*);
+void Appli_NotifyProvisioningConfigActivity(void);
 
 MOBLEUINT16 PWM_CoolValue(float colourValue ,float brightValue);
 MOBLEUINT16 PWM_WarmValue(float colourValue ,float brightValue);

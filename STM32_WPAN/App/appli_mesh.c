@@ -43,6 +43,7 @@
 #include "appli_light_client.h"
 #include "appli_sensor.h"
 #include "appli_sensors_client.h"
+#include "nfc_eeprom_mngt.h"
 
 #include "stm32_seq.h"
 #if (( CFG_LPM_SUPPORTED == 0) && (ENABLE_PWM_SUPPORT == 1))
@@ -196,6 +197,8 @@ MOBLEUINT8 lowPowerNodeApiTimer_Id;
 #endif
 
 MOBLEUINT8 pPropertyId[4];
+static uint8_t ProvisioningConfigActivitySeen = 0U;
+static uint8_t ProvisioningTimeoutNotified = 0U;
 
 /********************* Application configuration **************************/
 #if defined(__GNUC__) || defined(__IAR_SYSTEMS_ICC__) || defined(__CC_ARM)
@@ -231,7 +234,7 @@ void Appli_LowPowerProcess(void);
 static void AppliMeshTask(void);
 #endif
 void Appli_GetPublicationParamsCb(model_publicationparams_t* pPubParameters);
-WEAK_FUNCTION (void SerialPrvn_ProvisioningStatusUpdateCb(uint8_t flagPrvningInProcess, 
+WEAK_FUNCTION (void SerialPrvn_ProvisioningStatusUpdateCb(uint8_t flagPrvningInProcess,
                                                           MOBLEUINT16 nodeAddress));
 
 /* Private functions ---------------------------------------------------------*/
@@ -624,6 +627,7 @@ MOBLE_RESULT Appli_BleSetProductInfoCB(MOBLEUINT8 *company_product_info)
 void Appli_BleGattConnectionCompleteCb(void)
 { 
   ProvisionFlag = 1;
+  ProvisioningTimeoutNotified = 0U;
   /* Proxy Node, will be called whenever Gatt connection is established */
   /* Turn ON Red LED*/
   ProxyFlag = 1;
@@ -642,6 +646,16 @@ void Appli_BleGattDisconnectionCompleteCb(void)
   /* Turn Off Red LED*/
   ProxyFlag = 0;
   BSP_LED_Off(LED_GREEN);
+
+  /* Fallback path: some provisioners do not raise ConfigurationCallback reliably.
+   * If we already saw successful config traffic, exit runtime on disconnect. */
+  if (IsProvisioningRuntimeSessionActive() &&
+      (BLEMesh_IsUnprovisioned() == MOBLE_FALSE) &&
+      (ProvisioningConfigActivitySeen != 0U))
+  {
+    ClearProvisioningBootRequest(PROVISION_RESULT_SUCCESS);
+    TRACE_I(TF_PROVISION,"Provisioning session completed (configured/disconnect), manual power cycle required for GATT mode\r\n");
+  }
 }
 
 /**
@@ -654,7 +668,7 @@ void Appli_BleUnprovisionedIdentifyCb(MOBLEUINT8 data)
 #ifdef ENABLE_AUTH_TYPE_OUTPUT_OOB
   PrvngInProcess = 1;  
 #endif   
-  TRACE_I(TF_PROVISION,"Unprovisioned Node Identifier received: %02x\n\r", data);    
+  TRACE_I(TF_PROVISION,"Unprovisioned Node Identifier received: %02x\n\r", data);
 }
 
 /**
@@ -689,9 +703,9 @@ MOBLEUINT8 Appli_BleSetNumberOfElementsCb(void)
 */ 
 MOBLE_RESULT Appli_BleAttentionTimerCb(void)
 {
-/* avoid printf, if low power feature is supported */  
+/* Provide a visible identify feedback when provisioner triggers attention. */
 #if (LOW_POWER_FEATURE == 0)
-/*  TRACE_I(TF_MISC, " \r\n"); */
+  BSP_LED_Toggle(LED_BLUE);
 #endif /* LOW_POWER_FEATURE == 0 */
   return MOBLE_RESULT_SUCCESS;
 }
@@ -712,7 +726,7 @@ void Appli_BleOutputOOBAuthCb(MOBLEUINT8* output_oob, MOBLEUINT8 size)
         ooBData |= (output_oob[i] << 8*i);
     }
     OutputOobData = ooBData;
-    TRACE_I(TF_PROVISION,"Output OOB information for provisioner: %ld\n\r", ooBData);
+    TRACE_I(TF_PROVISION,"Output OOB information for provisioner: %lu\n\r", (unsigned long)ooBData);
   #endif
 }
   
@@ -1147,7 +1161,7 @@ MOBLE_RESULT BLEMesh_ProvisionDevice(neighbor_params_t *unprovDeviceArray, MOBLE
 void BLEMesh_PbAdvLinkOpenCb(void)
 { 
   ProvisionFlag = 0;
-  TRACE_I(TF_PROVISION,"PB-ADV Link opened successfully \n\r");    
+  TRACE_I(TF_PROVISION,"PB-ADV Link opened successfully \n\r");
   /* Turn ON Red LED*/
 #if LOW_POWER_FEATURE
   /* do nothing */
@@ -1164,7 +1178,7 @@ void BLEMesh_PbAdvLinkOpenCb(void)
 */ 
 void BLEMesh_PbAdvLinkCloseCb(void)
 {
-  TRACE_I(TF_PROVISION,"PB-ADV Link Closed successfully \n\r");   
+  TRACE_I(TF_PROVISION,"PB-ADV Link Closed successfully \n\r");
   /* Turn Off Red LED*/
 #if LOW_POWER_FEATURE
   /* do nothing */
@@ -1182,10 +1196,14 @@ void BLEMesh_PbAdvLinkCloseCb(void)
 void BLEMesh_ProvisionCallback(void)
 {
   ProvisionFlag = 1;
+  ProvisioningConfigActivitySeen = 0U;
+  ProvisioningTimeoutNotified = 0U;
 #ifdef ENABLE_AUTH_TYPE_OUTPUT_OOB
   PrvngInProcess = 0;
 #endif
+  ClearProvisioningBootRequest(PROVISION_RESULT_SUCCESS);
   TRACE_I(TF_PROVISION,"Device is provisioned by provisioner \r\n");
+  TRACE_I(TF_PROVISION,"Waiting configuration (manual power cycle required for GATT mode)\r\n");
   
 #if (LOW_POWER_FEATURE == 1)
   /* Call API LPN_API_TIMER_INTERVAL after LPN provisioning */
@@ -1201,6 +1219,14 @@ void BLEMesh_ProvisionCallback(void)
 */
 void BLEMesh_ConfigurationCallback(void)
 {
+  ProvisioningConfigActivitySeen = 1U;
+  ClearProvisioningBootRequest(PROVISION_RESULT_SUCCESS);
+
+  if (IsProvisioningRuntimeSessionActive())
+  {
+    TRACE_I(TF_PROVISION,"Provisioning session completed (configured), manual power cycle required for GATT mode\r\n");
+  }
+
 #if (LOW_POWER_FEATURE == 1)
 //  /* Set the task in the scheduler for the next execution */
 //  UTIL_SEQ_SetTask( 1<<CFG_TASK_MESH_LPN_REQ_ID, CFG_SCH_PRIO_0);
@@ -1211,6 +1237,14 @@ void BLEMesh_ConfigurationCallback(void)
     LPN_scan_enabled = MOBLE_TRUE;
   }
 #endif
+}
+
+void Appli_NotifyProvisioningConfigActivity(void)
+{
+  if (IsProvisioningRuntimeSessionActive() && (BLEMesh_IsUnprovisioned() == MOBLE_FALSE))
+  {
+    ProvisioningConfigActivitySeen = 1U;
+  }
 }
 
 
@@ -1633,6 +1667,19 @@ void Appli_Process(void)
     //SdkEvalLedOff(LED1);
   }
 #endif      
+
+  if (IsProvisioningRuntimeSessionActive() && IsProvisioningRuntimeSessionTimedOut())
+  {
+    if (ProvisioningTimeoutNotified == 0U)
+    {
+      ProvisioningTimeoutNotified = 1U;
+      if (GetProvisioningResult() != PROVISION_RESULT_SUCCESS)
+      {
+        ClearProvisioningBootRequest(PROVISION_RESULT_TIMEOUT);
+      }
+      TRACE_I(TF_PROVISION,"Provisioning session timeout, manual power cycle required for GATT mode\r\n");
+    }
+  }
 }
 
 #if PB_ADV_SUPPORTED
@@ -1967,7 +2014,8 @@ MOBLEUINT16 PwmValueMapping(MOBLEUINT16 setValue , MOBLEUINT16 maxRange , MOBLEI
 If implemented in application, linker would replace weak linking in library */
 WEAK_FUNCTION (void SerialPrvn_ProvisioningStatusUpdateCb(uint8_t flagPrvningInProcess, MOBLEUINT16 nodeAddress))
 {
-    
+  (void)flagPrvningInProcess;
+  (void)nodeAddress;
 }
 
 

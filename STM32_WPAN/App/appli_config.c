@@ -23,6 +23,7 @@
 #include "hal_common.h"
 #include "ble_mesh.h"
 #include "appli_config.h"
+#include "appli_mesh.h"
 #include "mesh_cfg.h"
 
 /** @addtogroup ST_BLE_Mesh
@@ -39,6 +40,14 @@
 
 /* Private variables ---------------------------------------------------------*/
 
+static void Appli_MarkConfigActivity(uint8_t status)
+{
+  if (status == 0x00U)
+  {
+    Appli_NotifyProvisioningConfigActivity();
+  }
+}
+
 
 /*****************************Config Model Callbacks***************************/
 /**
@@ -53,6 +62,7 @@ void Appli_GetAppKeyAddParamsCb(model_securityKeyParams_t* appKeyAddParams)
           appKeyAddParams->netKeyIndex, appKeyAddParams->appKeyIndex);
 
   TRACE_I(TF_CONFIG_SERVER,"Status is : %.2x \r\n", appKeyAddParams->status);
+  Appli_MarkConfigActivity(appKeyAddParams->status);
   /*Success Command*/
   if(appKeyAddParams->status == 0x00)
   {
@@ -78,6 +88,7 @@ void Appli_GetAppKeyDeleteParamsCb(model_securityKeyParams_t* appKeyDeleteParams
           appKeyDeleteParams->netKeyIndex, appKeyDeleteParams->appKeyIndex);
   
   TRACE_I(TF_CONFIG_SERVER,"Status is : %.2x \r\n", appKeyDeleteParams->status);
+  Appli_MarkConfigActivity(appKeyDeleteParams->status);
 }
 
 /**
@@ -89,6 +100,7 @@ void Appli_GetAppKeyListParamsCb(model_appKeyListParams_t* appKeyListParams)
 {
   TRACE_I(TF_CONFIG_SERVER,"App Key List for netKeyIndex %.2x is \r\n", appKeyListParams->netKeyIndex);
   TRACE_I(TF_CONFIG_SERVER,"Status is : %.2x \r\n", appKeyListParams->status);
+  Appli_MarkConfigActivity(appKeyListParams->status);
   /*Success*/
   if(appKeyListParams->status == 0x00)
   {
@@ -114,6 +126,7 @@ void Appli_GetAppKeyUpdateParamsCb(model_securityKeyParams_t* appKeyUpdatedParam
           appKeyUpdatedParams->netKeyIndex, appKeyUpdatedParams->appKeyIndex);
 
   TRACE_I(TF_CONFIG_SERVER,"Status is : %.2x \r\n", appKeyUpdatedParams->status);
+  Appli_MarkConfigActivity(appKeyUpdatedParams->status);
   
   /*Success Command*/
   if(appKeyUpdatedParams->status == 0x00)
@@ -141,6 +154,7 @@ void Appli_GetNetKeyAddParamsCb(model_securityKeyParams_t* netKeyAddParams)
                                                netKeyAddParams->netKeyIndex);
 
   TRACE_I(TF_CONFIG_SERVER,"Status is : %.2x \r\n", netKeyAddParams->status);
+  Appli_MarkConfigActivity(netKeyAddParams->status);
 
   /*Success Command*/
   if(netKeyAddParams->status == 0x00)
@@ -165,6 +179,7 @@ void Appli_GetNetKeyDeleteParamsCb(model_securityKeyParams_t* netKeyDeleteParams
    TRACE_I(TF_CONFIG_SERVER,"Net Key Delete received for netKeyIndex %d \r\n",\
                                                netKeyDeleteParams->netKeyIndex);
    TRACE_I(TF_CONFIG_SERVER,"Status is : %.2x \r\n", netKeyDeleteParams->status);
+  Appli_MarkConfigActivity(netKeyDeleteParams->status);
 }
 
 /**
@@ -175,6 +190,7 @@ void Appli_GetNetKeyDeleteParamsCb(model_securityKeyParams_t* netKeyDeleteParams
 void Appli_GetNetKeyListParamsCb(model_netKeyListParams_t* netKeyListParams)
 {
   TRACE_I(TF_CONFIG_SERVER,"Status is : %.2x \r\n", netKeyListParams->status);
+  Appli_MarkConfigActivity(netKeyListParams->status);
   TRACE_I(TF_CONFIG_SERVER,"NetKey Indexes are: \r\n");
   for (MOBLEUINT8 count=0 ; count< netKeyListParams->netKeyIndexList_size; count++)
   {
@@ -196,6 +212,7 @@ void Appli_GetNetKeyUpdateParamsCb(model_securityKeyParams_t* netKeyUpdatedParam
                                      netKeyUpdatedParams->netKeyIndex);
   
   TRACE_I(TF_CONFIG_SERVER,"Status is : %.2x \r\n", netKeyUpdatedParams->status);
+  Appli_MarkConfigActivity(netKeyUpdatedParams->status);
   if(netKeyUpdatedParams->status == 0)
   {
     TRACE_I(TF_CONFIG_SERVER,"Updated NetKey is:");
@@ -216,6 +233,7 @@ void Appli_GetNetKeyUpdateParamsCb(model_securityKeyParams_t* netKeyUpdatedParam
 */ 
 void Appli_GetAppKeyBindingParamsCb(model_appKeyBindingParams_t* appKeyBindParams)
 {
+  Appli_MarkConfigActivity(appKeyBindParams->status);
   TRACE_I(TF_CONFIG_SERVER,"AppKey binding received for elementIndex %d, modelID %.2lx,\
           appKeyIndex %.2x & status %.2x \r\n", appKeyBindParams->elementIndex,\
           appKeyBindParams->modelID, appKeyBindParams->appKeyIndex, appKeyBindParams->status);
@@ -228,6 +246,7 @@ void Appli_GetAppKeyBindingParamsCb(model_appKeyBindingParams_t* appKeyBindParam
 */ 
 void Appli_GetAppKeyUnBindingParamsCb(model_appKeyBindingParams_t* appKeyUnbindParams)
 {
+  Appli_MarkConfigActivity(appKeyUnbindParams->status);
   TRACE_I(TF_CONFIG_SERVER,"AppKey unbinding received for elementIndex %d, modelID %.2lx,\
           appKeyIndex %.2x & status %.2x \r\n",appKeyUnbindParams->elementIndex,\
           appKeyUnbindParams->modelID, appKeyUnbindParams->appKeyIndex,\
@@ -244,6 +263,7 @@ void Appli_GetSubAddParamsCb(model_subParams_t* subAddParams)
 {
   
   TRACE_I(TF_CONFIG_SERVER,"Status is : %.2x \r\n", subAddParams->status); 
+  Appli_MarkConfigActivity(subAddParams->status);
   if(subAddParams->isVirtual)
   {
     TRACE_I(TF_CONFIG_SERVER,"Subscription Virtual Add received for elementIndex %d, modelID %.2lx & subAddress %.2x \r\n",\
@@ -268,6 +288,7 @@ void Appli_GetSubAddParamsCb(model_subParams_t* subAddParams)
 void Appli_GetSubDeleteParamsCb(model_subParams_t* subDeleteParams)
 {
   TRACE_I(TF_CONFIG_SERVER,"Status is : %.2x \r\n", subDeleteParams->status); 
+  Appli_MarkConfigActivity(subDeleteParams->status);
   if(subDeleteParams->isVirtual)
   {
     TRACE_I(TF_CONFIG_SERVER,"Subscription Virtual Add Delete received for elementIndex %d, modelID %.2lx & subAddress %.2x \r\n",\
@@ -300,6 +321,7 @@ void Appli_GetSubDeleteParamsCb(model_subParams_t* subDeleteParams)
 void Appli_GetSubOverwriteParamsCb(model_subParams_t* subOverwriteParams)
 {
   TRACE_I(TF_CONFIG_SERVER,"Status is : %.2x \r\n", subOverwriteParams->status); 
+  Appli_MarkConfigActivity(subOverwriteParams->status);
   if(subOverwriteParams->isVirtual)
   {
     TRACE_I(TF_CONFIG_SERVER,"Subscription Virtual Overwrite received for elementIndex %d, modelID %.2lx & subAddress %.2x \r\n",\
@@ -344,6 +366,7 @@ void Appli_GetPublicationSetParamsCb(model_publicationparams_t* pPubParameters)
 void Appli_GetPublicationGetParamsCb(model_publicationparams_t* pPubParameters)
 {
   TRACE_I(TF_CONFIG_SERVER,"Status is : %.2x \r\n", pPubParameters->status); 
+  Appli_MarkConfigActivity(pPubParameters->status);
   TRACE_I(TF_CONFIG_SERVER,"Received Publication parameters:  credentialFlag = %.2x,\
           elementAddress = %.2x, modelID = %.2lx, appKeyIndex = %.2x,\
           publishPeriod = %.2x, publishRetransmitCount = %.2x, publishRetransmitIntervalSteps = %.2x,\

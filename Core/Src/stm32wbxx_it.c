@@ -52,6 +52,68 @@
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+typedef struct
+{
+  uint32_t magic;
+  uint32_t msp;
+  uint32_t psp;
+  uint32_t cfsr;
+  uint32_t hfsr;
+  uint32_t dfsr;
+  uint32_t afsr;
+  uint32_t bfar;
+  uint32_t mmfar;
+  uint32_t shcsr;
+  uint32_t icsr;
+
+  uint32_t msp_r0;
+  uint32_t msp_r1;
+  uint32_t msp_r2;
+  uint32_t msp_r3;
+  uint32_t msp_r12;
+  uint32_t msp_lr;
+  uint32_t msp_pc;
+  uint32_t msp_xpsr;
+
+  uint32_t psp_r0;
+  uint32_t psp_r1;
+  uint32_t psp_r2;
+  uint32_t psp_r3;
+  uint32_t psp_r12;
+  uint32_t psp_lr;
+  uint32_t psp_pc;
+  uint32_t psp_xpsr;
+} FaultContext_t;
+
+volatile FaultContext_t g_FaultContext;
+
+static void Fault_CopyStackFrame(uint32_t sp,
+                                 uint32_t *r0,
+                                 uint32_t *r1,
+                                 uint32_t *r2,
+                                 uint32_t *r3,
+                                 uint32_t *r12,
+                                 uint32_t *lr,
+                                 uint32_t *pc,
+                                 uint32_t *xpsr)
+{
+  /* Wide SRAM range for STM32WB user RAM banks. */
+  if (((sp & 0x3U) == 0U) &&
+      (sp >= 0x20000000UL) &&
+      (sp <= 0x2004FFF0UL))
+  {
+    const uint32_t *stack = (const uint32_t *)sp;
+    *r0 = stack[0];
+    *r1 = stack[1];
+    *r2 = stack[2];
+    *r3 = stack[3];
+    *r12 = stack[4];
+    *lr = stack[5];
+    *pc = stack[6];
+    *xpsr = stack[7];
+  }
+}
+
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -86,6 +148,44 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
+
+  g_FaultContext.magic = 0xDEADFA11UL;
+  g_FaultContext.msp = __get_MSP();
+  g_FaultContext.psp = __get_PSP();
+
+  g_FaultContext.cfsr = SCB->CFSR;
+  g_FaultContext.hfsr = SCB->HFSR;
+  g_FaultContext.dfsr = SCB->DFSR;
+  g_FaultContext.afsr = SCB->AFSR;
+  g_FaultContext.bfar = SCB->BFAR;
+  g_FaultContext.mmfar = SCB->MMFAR;
+  g_FaultContext.shcsr = SCB->SHCSR;
+  g_FaultContext.icsr = SCB->ICSR;
+
+  Fault_CopyStackFrame(g_FaultContext.msp,
+                       (uint32_t *)&g_FaultContext.msp_r0,
+                       (uint32_t *)&g_FaultContext.msp_r1,
+                       (uint32_t *)&g_FaultContext.msp_r2,
+                       (uint32_t *)&g_FaultContext.msp_r3,
+                       (uint32_t *)&g_FaultContext.msp_r12,
+                       (uint32_t *)&g_FaultContext.msp_lr,
+                       (uint32_t *)&g_FaultContext.msp_pc,
+                       (uint32_t *)&g_FaultContext.msp_xpsr);
+
+  Fault_CopyStackFrame(g_FaultContext.psp,
+                       (uint32_t *)&g_FaultContext.psp_r0,
+                       (uint32_t *)&g_FaultContext.psp_r1,
+                       (uint32_t *)&g_FaultContext.psp_r2,
+                       (uint32_t *)&g_FaultContext.psp_r3,
+                       (uint32_t *)&g_FaultContext.psp_r12,
+                       (uint32_t *)&g_FaultContext.psp_lr,
+                       (uint32_t *)&g_FaultContext.psp_pc,
+                       (uint32_t *)&g_FaultContext.psp_xpsr);
+
+  if ((CoreDebug->DHCSR & CoreDebug_DHCSR_C_DEBUGEN_Msk) != 0U)
+  {
+    __BKPT(0);
+  }
 
   /* USER CODE END HardFault_IRQn 0 */
   while (1)

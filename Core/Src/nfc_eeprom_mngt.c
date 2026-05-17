@@ -45,6 +45,13 @@
 #define START_CONFIG_ZONE 0x100
 #define START_PUBLIC_ZONE 0x140
 
+#define PROVISION_TIMEOUT_DEFAULT_S 120U
+#define CFG_RFU_PROVISION_FLAG_IDX        0U
+#define CFG_RFU_PROVISION_TIMEOUT_LSB_IDX 1U
+#define CFG_RFU_PROVISION_TIMEOUT_MSB_IDX 2U
+#define CFG_RFU_PROVISION_REASON_IDX      3U
+#define CFG_RFU_PROVISION_RESULT_IDX      4U
+
 #define I2C_LSB_PWD       0x00000000U
 #define I2C_MSB_PWD       0x00000000U
 /* USER CODE END Private defines */
@@ -62,6 +69,8 @@ sURI_Info             URIK;
 ST25DVxxKC_PASSWD_t   PassWord;
 
 uint64_t              MacAdd;
+static bool           ProvisioningRuntimeSessionActive;
+static uint32_t       ProvisioningRuntimeSessionDeadlineTick;
 /* USER CODE END Private variables */
 
 /* USER CODE BEGIN Private function prototypes */
@@ -69,6 +78,7 @@ static void EepromNameInitialisation(void);
 static void EepromMngtInitialisation(void);
 static void macAdd2string(uint64_t mac, char *str, size_t str_size);
 static uint64_t BuildMacAdd(void);
+static void WriteMngtConfigToEeprom(void);
 /* USER CODE END Private function prototypes */
 
 /* -------------------------------------------------------------------------- */
@@ -77,13 +87,13 @@ static uint64_t BuildMacAdd(void);
 
 bool IsEepromAlreadyInitialised(void)
 {
-  // Ancienne API: tu peux la faire évoluer si besoin, pour l'instant true
+  // Ancienne API: tu peux la faire ï¿½voluer si besoin, pour l'instant true
   return true;
 }
 
 void UpdateDesignWithEEpromValue(void)
 {
-  // Met à jour la logique applicative à partir de l’EEPROM
+  // Met ï¿½ jour la logique applicative ï¿½ partir de lï¿½EEPROM
   SetResetTimerFinish(Eeprom_mngt_Config.ResetTimerFinish);
   SetResetTimerNotFinish(Eeprom_mngt_Config.ResetTimerNotFinish);
 }
@@ -182,7 +192,7 @@ void EepromNFCInit(void)
 }
 
 /**
- * @brief  Vérifie si le NDEF est cohérent avec SSID + MAC
+ * @brief  Vï¿½rifie si le NDEF est cohï¿½rent avec SSID + MAC
  */
 bool isNDEFValid(void)
 {
@@ -277,7 +287,7 @@ void EepromConfigInitialisation(void)
 }
 
 /**
- * @brief  Initialisation zone PUBLIC (inchangée)
+ * @brief  Initialisation zone PUBLIC (inchangï¿½e)
  */
 void EepromPublicInitialisation(void)
 {
@@ -436,13 +446,110 @@ void SetMode(uint8_t Mode)
   }
 }
 
+bool IsProvisioningBootRequested(void)
+{
+  return (Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_FLAG_IDX] == PROVISION_BOOT_FLAG_ACTIVE);
+}
+
+uint16_t GetProvisioningTimeoutSeconds(void)
+{
+  uint8_t lsb = Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_TIMEOUT_LSB_IDX];
+  uint8_t msb = Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_TIMEOUT_MSB_IDX];
+  uint16_t timeout = (uint16_t)lsb | ((uint16_t)msb << 8);
+
+  if ((lsb == 0xFFU) && (msb == 0xFFU))
+  {
+    return PROVISION_TIMEOUT_DEFAULT_S;
+  }
+
+  if (timeout == 0U)
+  {
+    return PROVISION_TIMEOUT_DEFAULT_S;
+  }
+
+  return timeout;
+}
+
+uint8_t GetProvisioningReason(void)
+{
+  uint8_t reason = Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_REASON_IDX];
+  return (reason == 0xFFU) ? PROVISION_REASON_NONE : reason;
+}
+
+uint8_t GetProvisioningResult(void)
+{
+  uint8_t result = Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_RESULT_IDX];
+  return (result == 0xFFU) ? PROVISION_RESULT_UNKNOWN : result;
+}
+
+void SetProvisioningBootRequest(uint16_t timeoutSeconds, uint8_t reason)
+{
+  if (timeoutSeconds == 0U)
+  {
+    timeoutSeconds = PROVISION_TIMEOUT_DEFAULT_S;
+  }
+
+  Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_FLAG_IDX] = PROVISION_BOOT_FLAG_ACTIVE;
+  Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_TIMEOUT_LSB_IDX] = (uint8_t)(timeoutSeconds & 0xFFU);
+  Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_TIMEOUT_MSB_IDX] = (uint8_t)((timeoutSeconds >> 8) & 0xFFU);
+  Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_REASON_IDX] = reason;
+  Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_RESULT_IDX] = PROVISION_RESULT_UNKNOWN;
+
+  WriteMngtConfigToEeprom();
+}
+
+void ClearProvisioningBootRequest(uint8_t result)
+{
+  Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_FLAG_IDX] = PROVISION_BOOT_FLAG_NONE;
+  Eeprom_mngt_Config.RFU[CFG_RFU_PROVISION_RESULT_IDX] = result;
+
+  WriteMngtConfigToEeprom();
+}
+
+void StartProvisioningRuntimeSession(uint16_t timeoutSeconds)
+{
+  if (timeoutSeconds == 0U)
+  {
+    timeoutSeconds = PROVISION_TIMEOUT_DEFAULT_S;
+  }
+
+  ProvisioningRuntimeSessionActive = true;
+  ProvisioningRuntimeSessionDeadlineTick = HAL_GetTick() + ((uint32_t)timeoutSeconds * 1000U);
+}
+
+bool IsProvisioningRuntimeSessionActive(void)
+{
+  return ProvisioningRuntimeSessionActive;
+}
+
+bool IsProvisioningRuntimeSessionTimedOut(void)
+{
+  if (!ProvisioningRuntimeSessionActive)
+  {
+    return false;
+  }
+
+  return ((int32_t)(HAL_GetTick() - ProvisioningRuntimeSessionDeadlineTick) >= 0);
+}
+
+void StopProvisioningRuntimeSession(uint8_t result)
+{
+  if (!ProvisioningRuntimeSessionActive)
+  {
+    return;
+  }
+
+  ProvisioningRuntimeSessionActive = false;
+  ClearProvisioningBootRequest(result);
+}
+
 void readEepromContent(void)
 {
-  // Debug éventuel
+  // Debug ï¿½ventuel
 }
 
 /* -------------------------------------------------------------------------- */
-/*                          Fonctions privées                                 */
+/*                          Fonctions privï¿½es                                 */
 /* -------------------------------------------------------------------------- */
 
 static void macAdd2string(uint64_t mac, char *str, size_t str_size)
@@ -564,5 +671,21 @@ static void EepromMngtInitialisation(void)
                                     sizeof(cfg_tmp)) != NFCTAG_OK)
     {
     }
+  }
+}
+
+static void WriteMngtConfigToEeprom(void)
+{
+  Eeprom_mngt_Config.Crc = HAL_CRC_Calculate(
+      &hcrc,
+      (uint32_t *)&Eeprom_mngt_Config,
+      (uint32_t)&(((Eeprom_mngt_Config_t *)NULL)->Crc));
+
+  while (NFC07A1_NFCTAG_WriteData(
+             NFC07A1_NFCTAG_INSTANCE,
+             (uint8_t *)&Eeprom_mngt_Config,
+             START_CONFIG_ZONE,
+             sizeof(Eeprom_mngt_Config_t)) != NFCTAG_OK)
+  {
   }
 }

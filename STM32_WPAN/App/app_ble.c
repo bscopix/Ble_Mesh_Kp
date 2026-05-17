@@ -39,6 +39,9 @@
 #include "dis_app.h"
 #include "bas_app.h"
 #include "nfc_eeprom_mngt.h"
+#include "mesh_cfg_usr.h"
+#include "appli_mesh.h"
+extern void HCI_Event_CB(void *p_Pckt);
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -467,7 +470,59 @@ void APP_BLE_Init(void)
   /**
    * Initialization of HCI & GATT & GAP layer
    */
+#ifdef DISABLE_MESH_AUTOSTART
   Ble_Hci_Gap_Gatt_Init();
+  APP_DBG_MSG("==>> Mesh autostart disabled: legacy Ble_Hci_Gap_Gatt_Init enabled\n");
+#else
+  {
+    uint8_t bd_addr[CONFIG_DATA_PUBADDR_LEN];
+    uint32_t udn = LL_FLASH_GetUDN();
+    tBleStatus ret_addr = BLE_STATUS_INVALID_PARAMS;
+
+    if (udn != 0xFFFFFFFFU)
+    {
+      uint32_t company_id = LL_FLASH_GetSTCompanyID();
+      uint32_t device_id = LL_FLASH_GetDeviceID();
+
+      bd_addr[0] = (uint8_t)(udn & 0x000000FFU);
+      bd_addr[1] = (uint8_t)((udn & 0x0000FF00U) >> 8);
+      bd_addr[2] = (uint8_t)(device_id & 0x000000FFU);
+      bd_addr[3] = (uint8_t)(company_id & 0x000000FFU);
+      bd_addr[4] = (uint8_t)((company_id & 0x0000FF00U) >> 8);
+      bd_addr[5] = (uint8_t)((company_id & 0x00FF0000U) >> 16);
+    }
+    else
+    {
+      uint64_t fallback = GetMacAdd();
+      bd_addr[0] = (uint8_t)(fallback & 0x00000000000000FFULL);
+      bd_addr[1] = (uint8_t)((fallback & 0x000000000000FF00ULL) >> 8);
+      bd_addr[2] = (uint8_t)((fallback & 0x0000000000FF0000ULL) >> 16);
+      bd_addr[3] = (uint8_t)((fallback & 0x00000000FF000000ULL) >> 24);
+      bd_addr[4] = (uint8_t)((fallback & 0x000000FF00000000ULL) >> 32);
+      bd_addr[5] = (uint8_t)((fallback & 0x0000FF0000000000ULL) >> 40);
+    }
+
+    ret_addr = aci_hal_write_config_data(CONFIG_DATA_PUBADDR_OFFSET,
+                       CONFIG_DATA_PUBADDR_LEN,
+                                         bd_addr);
+    if (ret_addr != BLE_STATUS_SUCCESS)
+    {
+      APP_DBG_MSG("  Fail   : aci_hal_write_config_data command - CONFIG_DATA_PUBLIC_ADDRESS_OFFSET, result: 0x%x\n", ret_addr);
+    }
+    else
+    {
+      APP_DBG_MSG("  Success: aci_hal_write_config_data command - CONFIG_DATA_PUBLIC_ADDRESS_OFFSET\n");
+      APP_DBG_MSG("  Public Bluetooth Address: %02x:%02x:%02x:%02x:%02x:%02x\n",
+                  bd_addr[5],
+                  bd_addr[4],
+                  bd_addr[3],
+                  bd_addr[2],
+                  bd_addr[1],
+                  bd_addr[0]);
+    }
+  }
+  APP_DBG_MSG("==>> Mesh autostart enabled: skip legacy Ble_Hci_Gap_Gatt_Init\n");
+#endif
 
   /**
    * Initialization of the BLE Services
@@ -549,13 +604,25 @@ void APP_BLE_Init(void)
   AdvIntervalMax = CFG_FAST_CONN_ADV_INTERVAL_MAX;
 
   /**
-   * Start to Advertise to be connected by P2P Client
+   * Start legacy advertising only when Mesh autostart is disabled.
+   * With Mesh autostart enabled, provisioning shall run in Mesh-only mode
+   * (same principle as BLE_MeshLightingPRFNode).
    */
-  Adv_Request(APP_BLE_FAST_ADV);
-
+#ifdef DISABLE_MESH_AUTOSTART
+  if (!IsProvisioningRuntimeSessionActive())
+  {
+    Adv_Request(APP_BLE_FAST_ADV);
+    /* Start additional beacon only after primary discoverable advertising is requested. */
+    additionnal_adv();
+  }
+  else
+  {
+    APP_DBG_MSG("==>> Mesh provisioning runtime active: legacy GAP advertising disabled\n");
+  }
   /* USER CODE BEGIN APP_BLE_Init_2 */
-  /* Start additional beacon only after primary discoverable advertising is requested. */
-  additionnal_adv();
+#else
+  APP_DBG_MSG("==>> Mesh autostart enabled: legacy GAP advertising/beacon disabled\n");
+#endif
 
   /* USER CODE END APP_BLE_Init_2 */
 
@@ -582,6 +649,23 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
 
   p_event_pckt = (hci_event_pckt*) ((hci_uart_pckt *) p_Pckt)->data;
 
+#ifndef DISABLE_MESH_AUTOSTART
+  /* In mesh autostart mode, always forward BLE events to mesh dispatcher. */
+  HCI_Event_CB(p_Pckt);
+#if (LOW_POWER_FEATURE == 1)
+  UTIL_SEQ_SetTask(1 << CFG_TASK_MESH_REQ_ID, CFG_SCH_PRIO_0);
+#endif
+
+  return (SVCCTL_UserEvtFlowEnable);
+#endif
+
+  /* Keep Mesh event processing active even when booting in legacy GATT mode. */
+  HCI_Event_CB(p_Pckt);
+
+#if (LOW_POWER_FEATURE == 1)
+  UTIL_SEQ_SetTask(1 << CFG_TASK_MESH_REQ_ID, CFG_SCH_PRIO_0);
+#endif
+
   switch (p_event_pckt->evt)
   {
     case HCI_DISCONNECTION_COMPLETE_EVT_CODE:
@@ -606,8 +690,22 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
 
       /* USER CODE END EVT_DISCONN_COMPLETE_1 */
 
-      /* restart advertising */
-      Adv_Request(APP_BLE_FAST_ADV);
+      /* Keep legacy advertising available after any disconnect in concurrent mode. */
+#ifdef DISABLE_MESH_AUTOSTART
+  APP_DBG_MSG("==>> Disconnect path: runtime=%u status=%u\n",
+      IsProvisioningRuntimeSessionActive() ? 1U : 0U,
+      (unsigned int)BleApplicationContext.Device_Connection_Status);
+      if (!IsProvisioningRuntimeSessionActive())
+      {
+        Adv_Request(APP_BLE_FAST_ADV);
+        /* Keep post-disconnect discoverability consistent with boot behavior. */
+        additionnal_adv();
+      }
+      else
+      {
+        APP_DBG_MSG("==>> Skip legacy advertising restart during Mesh provisioning session\n");
+      }
+#endif
 
       /**
        * SPECIFIC to P2P Server APP
@@ -615,6 +713,7 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
       HandleNotification.P2P_Evt_Opcode = PEER_DISCON_HANDLE_EVT;
       HandleNotification.ConnectionHandle = BleApplicationContext.BleApplicationContext_legacy.connectionHandle;
       P2PS_APP_Notification(&HandleNotification);
+
       /* USER CODE BEGIN EVT_DISCONN_COMPLETE */
 
       /* USER CODE END EVT_DISCONN_COMPLETE */
@@ -741,6 +840,13 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
     case HCI_VENDOR_SPECIFIC_DEBUG_EVT_CODE:
       p_blecore_evt = (evt_blecore_aci*) p_event_pckt->data;
       /* USER CODE BEGIN EVT_VENDOR */
+      if (IsProvisioningRuntimeSessionActive())
+      {
+        if (p_blecore_evt->ecode != ACI_HAL_END_OF_RADIO_ACTIVITY_VSEVT_CODE)
+        {
+          APP_DBG_MSG(">>== VSEVT ecode: 0x%04x\r\n", p_blecore_evt->ecode);
+        }
+      }
 
       /* USER CODE END EVT_VENDOR */
       switch (p_blecore_evt->ecode)
@@ -783,9 +889,60 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
         }
         break;
 
+        case ACI_ATT_EXCHANGE_MTU_RESP_VSEVT_CODE:
+        {
+          aci_att_exchange_mtu_resp_event_rp0 *p_mtu;
+
+          p_mtu = (aci_att_exchange_mtu_resp_event_rp0 *)p_blecore_evt->data;
+          APP_DBG_MSG(">>== ACI_ATT_EXCHANGE_MTU_RESP_VSEVT_CODE conn=0x%04x mtu=%u\r\n",
+                      p_mtu->Connection_Handle,
+                      p_mtu->Server_RX_MTU);
+        }
+        break;
+
+        case ACI_GATT_TX_POOL_AVAILABLE_VSEVT_CODE:
+          /* Benign flow-control event: no action required in app layer. */
+          break;
+
+        case ACI_GATT_ATTRIBUTE_MODIFIED_VSEVT_CODE:
+        {
+          aci_gatt_attribute_modified_event_rp0 *p_attr;
+
+          p_attr = (aci_gatt_attribute_modified_event_rp0 *)p_blecore_evt->data;
+          APP_DBG_MSG(">>== ACI_GATT_ATTRIBUTE_MODIFIED_VSEVT_CODE conn=0x%04x attr=0x%04x off=%u len=%u\r\n",
+                      p_attr->Connection_Handle,
+                      p_attr->Attr_Handle,
+                      p_attr->Offset,
+                      p_attr->Attr_Data_Length);
+
+          if (p_attr->Attr_Data_Length > 0U)
+          {
+            uint8_t proxy_type = (uint8_t)(p_attr->Attr_Data[0] & 0x3FU);
+
+            APP_DBG_MSG(">>== ATTR_DATA[0]=0x%02x\r\n", p_attr->Attr_Data[0]);
+
+            /* During runtime provisioning, Network/Proxy Config PDUs indicate
+             * configuration traffic is still ongoing: refresh the runtime deadline
+             * but do not mark configuration as completed. */
+            if (IsProvisioningRuntimeSessionActive() &&
+                (BLEMesh_IsUnprovisioned() == MOBLE_FALSE) &&
+                ((proxy_type == 0x00U) || (proxy_type == 0x02U)))
+            {
+              StartProvisioningRuntimeSession(GetProvisioningTimeoutSeconds());
+            }
+          }
+        }
+        break;
+
         /* USER CODE BEGIN BLUE_EVT */
 
         /* USER CODE END BLUE_EVT */
+        default:
+          if (IsProvisioningRuntimeSessionActive())
+          {
+            APP_DBG_MSG(">>== VSEVT unhandled ecode: 0x%04x\r\n", p_blecore_evt->ecode);
+          }
+          break;
       }
       break; /* HCI_VENDOR_SPECIFIC_DEBUG_EVT_CODE */
 
@@ -1155,8 +1312,17 @@ static void Adv_Request(APP_BLE_ConnStatus_t NewStatus)
                                  0);
   if (ret != BLE_STATUS_SUCCESS)
   {
-    APP_DBG_MSG("==>> aci_gap_set_discoverable - fail, result: 0x%x \n", ret);
-    BleApplicationContext.Device_Connection_Status = APP_BLE_IDLE;
+    /* 0x0C/0x12 can happen when Mesh stack already controls advertising state. */
+    if ((ret == 0x0CU) || (ret == 0x12U))
+    {
+      APP_DBG_MSG("==>> aci_gap_set_discoverable - mesh already controls advertising (result: 0x%x)\n", ret);
+      BleApplicationContext.Device_Connection_Status = NewStatus;
+    }
+    else
+    {
+      APP_DBG_MSG("==>> aci_gap_set_discoverable - fail, result: 0x%x \n", ret);
+      BleApplicationContext.Device_Connection_Status = APP_BLE_IDLE;
+    }
     return;
   }
   else
@@ -1342,7 +1508,9 @@ static void Adv_Cancel(void)
   }
 
   /* USER CODE BEGIN Adv_Cancel_2 */
+#ifdef DISABLE_MESH_AUTOSTART
 	Adv_Request(APP_BLE_LP_ADV); //set to low power advertising
+#endif
   /* USER CODE END Adv_Cancel_2 */
 
   return;
