@@ -36,6 +36,9 @@ void GPIOVisualStateDisable(void);
 void GPIOVisualStateEnable(void);
 void GetTabShot(void);
 void GetHardwareVersion(void);
+uint8_t GetLastShotNotification(uint8_t *dst, uint8_t max_len);
+uint8_t GetLastTargetNotification(uint8_t *dst, uint8_t max_len);
+uint8_t GetLastBatteryLevel(void);
 
 extern char DISAPP_HARDWARE_REVISION_NUMBER[6];
 

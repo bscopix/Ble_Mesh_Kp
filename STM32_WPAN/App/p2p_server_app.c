@@ -139,12 +139,28 @@ void P2PS_STM_App_Notification(P2PS_STM_App_Notification_evt_t *pNotification)
         {
           if (pNotification->DataTransfered.Length <= P2P_CTRL_MAX_WRITE_LEN)
           {
-            memcpy(P2P_CtrlWritePayload,
-                   pNotification->DataTransfered.pPayload,
-                   pNotification->DataTransfered.Length);
-            P2P_CtrlWriteLen = pNotification->DataTransfered.Length;
-            P2P_CtrlWritePending = 1U;
-            UTIL_SEQ_SetTask(1 << CFG_TASK_P2P_CTRL_REQ_ID, CFG_SCH_PRIO_3);
+            /* ENTER_PROVISIONING must be handled immediately to avoid
+             * scheduler latency preventing the expected reboot path. */
+            if (opcode == P2P_CTRL_OPCODE_ENTER_PROVISIONING)
+            {
+              APP_DBG_MSG("P2P ctrl immediate: op=0x%02x len=%u\r\n",
+                          opcode,
+                          pNotification->DataTransfered.Length);
+              P2PS_Handle_Mesh_Control_Write(pNotification->DataTransfered.pPayload,
+                                             pNotification->DataTransfered.Length);
+            }
+            else
+            {
+              memcpy(P2P_CtrlWritePayload,
+                     pNotification->DataTransfered.pPayload,
+                     pNotification->DataTransfered.Length);
+              P2P_CtrlWriteLen = pNotification->DataTransfered.Length;
+              P2P_CtrlWritePending = 1U;
+              APP_DBG_MSG("P2P ctrl queued: op=0x%02x len=%u\r\n",
+                          opcode,
+                          pNotification->DataTransfered.Length);
+              UTIL_SEQ_SetTask(1 << CFG_TASK_P2P_CTRL_REQ_ID, CFG_SCH_PRIO_0);
+            }
           }
           else
           {

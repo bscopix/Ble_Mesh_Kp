@@ -191,8 +191,8 @@ Either use 0 to disable or 1 to enable
 *** Following section helps to define Device Name during Provisioning  *********
 *******************************************************************************/
 
-#define DEVICE_NAME_SIZE                                                      11
-#define DEVICE_NAME                  'S','T',' ','B','L','E',' ','M','e','s','h'
+#define DEVICE_NAME_SIZE                                                      7
+#define DEVICE_NAME                  'K','P','_','M','e','s','h'
 
 /*******************************************************************************
 *** Following section helps to select right configuration of Models  ***********

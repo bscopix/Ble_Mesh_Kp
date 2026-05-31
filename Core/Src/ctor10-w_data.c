@@ -188,7 +188,7 @@ void GetHardwareVersion(void)
         patch = 1;
     }
 
-    // Mettre à jour la variable DISAPP_HARDWARE_REVISION_NUMBER
+    // Mettre ï¿½ jour la variable DISAPP_HARDWARE_REVISION_NUMBER
     sprintf(DISAPP_HARDWARE_REVISION_NUMBER, "%d.%d.%d", major, minor, patch);
 }
 
@@ -449,4 +449,45 @@ void GetTabShot(void)
 
 		
 	}
+}
+
+uint8_t GetLastShotNotification(uint8_t *dst, uint8_t max_len)
+{
+	uint8_t copy_len = NOTIFY_SHOT_SIZE;
+
+	if ((dst == NULL) || (max_len == 0U))
+	{
+		return 0U;
+	}
+
+	if (copy_len > max_len)
+	{
+		copy_len = max_len;
+	}
+
+	memcpy(dst, BLENotificationShot, copy_len);
+	return copy_len;
+}
+
+uint8_t GetLastTargetNotification(uint8_t *dst, uint8_t max_len)
+{
+	uint8_t copy_len = NOTIFY_TARGET_SIZE;
+
+	if ((dst == NULL) || (max_len == 0U))
+	{
+		return 0U;
+	}
+
+	if (copy_len > max_len)
+	{
+		copy_len = max_len;
+	}
+
+	memcpy(dst, BLENotificationTarget, copy_len);
+	return copy_len;
+}
+
+uint8_t GetLastBatteryLevel(void)
+{
+	return RXDecode.Pwr;
 }

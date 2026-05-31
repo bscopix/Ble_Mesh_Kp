@@ -31,6 +31,7 @@
 #include "lib_NDEF_URI.h"
 #include "lib_NDEF_Text.h"
 #include "ctor10-w_data.h"
+#include "dbg_trace.h"
 /* USER CODE END Includes */
 
 /* USER CODE BEGIN Private defines */
@@ -488,6 +489,10 @@ void SetProvisioningBootRequest(uint16_t timeoutSeconds, uint8_t reason)
     timeoutSeconds = PROVISION_TIMEOUT_DEFAULT_S;
   }
 
+  APP_DBG_MSG("[EEPROM][MNGT] SetProvisioningBootRequest req: timeout=%u reason=%u\r\n",
+              timeoutSeconds,
+              reason);
+
   Eeprom_mngt_Config.ProvisionBootFlag = PROVISION_BOOT_FLAG_ACTIVE;
   Eeprom_mngt_Config.ProvisionTimeoutSecondsLsb = (uint8_t)(timeoutSeconds & 0xFFU);
   Eeprom_mngt_Config.ProvisionTimeoutSecondsMsb = (uint8_t)((timeoutSeconds >> 8) & 0xFFU);
@@ -499,6 +504,8 @@ void SetProvisioningBootRequest(uint16_t timeoutSeconds, uint8_t reason)
 
 void ClearProvisioningBootRequest(uint8_t result)
 {
+  APP_DBG_MSG("[EEPROM][MNGT] ClearProvisioningBootRequest req: result=%u\r\n", result);
+
   Eeprom_mngt_Config.ProvisionBootFlag = PROVISION_BOOT_FLAG_NONE;
   Eeprom_mngt_Config.ProvisionResult = result;
 
@@ -667,10 +674,25 @@ static void EepromMngtInitialisation(void)
                                (uint32_t *)&Eeprom_mngt_Config,
                                (uint32_t)&(((Eeprom_mngt_Config_t *)NULL)->Crc));
 
+  APP_DBG_MSG("[EEPROM][MNGT] boot read: ver=%u boot=0x%02x timeout=%u reason=%u result=%u crc_stored=0x%08lx crc_calc=0x%08lx\r\n",
+              Eeprom_mngt_Config.VersionEeprom,
+              Eeprom_mngt_Config.ProvisionBootFlag,
+              (uint16_t)Eeprom_mngt_Config.ProvisionTimeoutSecondsLsb
+                | ((uint16_t)Eeprom_mngt_Config.ProvisionTimeoutSecondsMsb << 8),
+              Eeprom_mngt_Config.ProvisionReason,
+              Eeprom_mngt_Config.ProvisionResult,
+              (unsigned long)Eeprom_mngt_Config.Crc,
+              (unsigned long)CRCValue);
+
   if (Eeprom_mngt_Config.Crc != CRCValue ||
       Eeprom_mngt_Config.VersionEeprom != EEPROM_VERSION_CONFIG)
   {
     writeCfg = true;
+
+    APP_DBG_MSG("[EEPROM][MNGT] invalid config -> reset defaults (ver=%u expected=%u, crc_ok=%u)\r\n",
+                Eeprom_mngt_Config.VersionEeprom,
+                EEPROM_VERSION_CONFIG,
+                (Eeprom_mngt_Config.Crc == CRCValue) ? 1U : 0U);
 
     while (NFC07A1_NFCTAG_PresentI2CPassword(NFC07A1_NFCTAG_INSTANCE,
                                              PassWord) != NFCTAG_OK)
@@ -705,11 +727,23 @@ static void EepromMngtInitialisation(void)
                                     sizeof(cfg_tmp)) != NFCTAG_OK)
     {
     }
+
+    APP_DBG_MSG("[EEPROM][MNGT] defaults written: boot=0x%02x timeout=%u reason=%u result=%u\r\n",
+                cfg_tmp.ProvisionBootFlag,
+                (uint16_t)cfg_tmp.ProvisionTimeoutSecondsLsb
+                  | ((uint16_t)cfg_tmp.ProvisionTimeoutSecondsMsb << 8),
+                cfg_tmp.ProvisionReason,
+                cfg_tmp.ProvisionResult);
   }
 }
 
 static void WriteMngtConfigToEeprom(void)
 {
+  Eeprom_mngt_Config_t cfg_verify = {0};
+  uint32_t verify_crc = 0U;
+  uint16_t verify_timeout = 0U;
+  int32_t read_status;
+
   Eeprom_mngt_Config.Crc = HAL_CRC_Calculate(
       &hcrc,
       (uint32_t *)&Eeprom_mngt_Config,
@@ -721,5 +755,39 @@ static void WriteMngtConfigToEeprom(void)
              START_CONFIG_ZONE,
              sizeof(Eeprom_mngt_Config_t)) != NFCTAG_OK)
   {
+  }
+
+  APP_DBG_MSG("[EEPROM][MNGT] write done: boot=0x%02x timeout=%u reason=%u result=%u crc=0x%08lx\r\n",
+              Eeprom_mngt_Config.ProvisionBootFlag,
+              (uint16_t)Eeprom_mngt_Config.ProvisionTimeoutSecondsLsb
+                | ((uint16_t)Eeprom_mngt_Config.ProvisionTimeoutSecondsMsb << 8),
+              Eeprom_mngt_Config.ProvisionReason,
+              Eeprom_mngt_Config.ProvisionResult,
+              (unsigned long)Eeprom_mngt_Config.Crc);
+
+  read_status = NFC07A1_NFCTAG_ReadData(NFC07A1_NFCTAG_INSTANCE,
+                                        (uint8_t *)&cfg_verify,
+                                        START_CONFIG_ZONE,
+                                        sizeof(cfg_verify));
+  if (read_status == NFCTAG_OK)
+  {
+    verify_crc = HAL_CRC_Calculate(&hcrc,
+                                   (uint32_t *)&cfg_verify,
+                                   (uint32_t)&(((Eeprom_mngt_Config_t *)NULL)->Crc));
+    verify_timeout = (uint16_t)cfg_verify.ProvisionTimeoutSecondsLsb
+      | ((uint16_t)cfg_verify.ProvisionTimeoutSecondsMsb << 8);
+
+    APP_DBG_MSG("[EEPROM][MNGT] verify read: ver=%u boot=0x%02x timeout=%u reason=%u result=%u crc_stored=0x%08lx crc_calc=0x%08lx\r\n",
+                cfg_verify.VersionEeprom,
+                cfg_verify.ProvisionBootFlag,
+                verify_timeout,
+                cfg_verify.ProvisionReason,
+                cfg_verify.ProvisionResult,
+                (unsigned long)cfg_verify.Crc,
+                (unsigned long)verify_crc);
+  }
+  else
+  {
+    APP_DBG_MSG("[EEPROM][MNGT] verify read failed: status=%ld\r\n", (long)read_status);
   }
 }

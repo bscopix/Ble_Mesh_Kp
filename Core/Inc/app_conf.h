@@ -122,8 +122,8 @@
 /**
  * Device name configuration for Generic Access Service
  */
-#define CFG_GAP_DEVICE_NAME             "TEMPLATE"
-#define CFG_GAP_DEVICE_NAME_LENGTH      (8)
+#define CFG_GAP_DEVICE_NAME             "KP_Mesh"
+#define CFG_GAP_DEVICE_NAME_LENGTH      (7)
 
 /**
  * Define PHY
