@@ -1069,20 +1069,18 @@ static void Appli_GetMACfromUniqueNumber(void)
   
   uint8_t i;
   uint8_t sum = 239;
-#if 0
-  uint8_t *ls_addr;
-  
-  ls_addr = (uint8_t*)DEVICE_ID_REG2;
-  
-  for(i = 0; i < 4; i += 1) 
+
+  /* Utilise GetMacAdd() — même algo que le firmware GATT (BuildMacAdd = 0xC000<<32 + UDN).
+   * Garantit que BD_MAC Mesh == BD_MAC GATT sur le même chip. */
   {
-    bdaddr[i] = *ls_addr;
-    ls_addr++;
+    uint64_t mac = GetMacAdd();
+    bdaddr[0] = (uint8_t)(mac & 0xFFULL);
+    bdaddr[1] = (uint8_t)((mac >>  8) & 0xFFULL);
+    bdaddr[2] = (uint8_t)((mac >> 16) & 0xFFULL);
+    bdaddr[3] = (uint8_t)((mac >> 24) & 0xFFULL);
+    bdaddr[4] = (uint8_t)((mac >> 32) & 0xFFULL);
+    bdaddr[5] = (uint8_t)((mac >> 40) & 0xFFULL);
   }
-  
-  bdaddr[4] = *(uint8_t*)(DEVICE_ID_REG0);
-  bdaddr[5] = (*(uint8_t*)(DEVICE_ID_REG1)) | 0xC0; 
-#endif
   /* Static Device Address: 
   The two most significant bits 
   of the address shall be equal to 1, 

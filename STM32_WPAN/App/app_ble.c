@@ -529,30 +529,18 @@ void APP_BLE_Init(void)
 #else
   {
     uint8_t bd_addr[CONFIG_DATA_PUBADDR_LEN];
-    uint32_t udn = LL_FLASH_GetUDN();
     tBleStatus ret_addr = BLE_STATUS_INVALID_PARAMS;
 
-    if (udn != 0xFFFFFFFFU)
+    /* Utilise la même adresse que le firmware GATT : dérivée du UDN via GetMacAdd()
+     * (BuildMacAdd = 0xC000<<32 + LL_FLASH_GetUDN), identique dans les deux firmwares */
     {
-      uint32_t company_id = LL_FLASH_GetSTCompanyID();
-      uint32_t device_id = LL_FLASH_GetDeviceID();
-
-      bd_addr[0] = (uint8_t)(udn & 0x000000FFU);
-      bd_addr[1] = (uint8_t)((udn & 0x0000FF00U) >> 8);
-      bd_addr[2] = (uint8_t)(device_id & 0x000000FFU);
-      bd_addr[3] = (uint8_t)(company_id & 0x000000FFU);
-      bd_addr[4] = (uint8_t)((company_id & 0x0000FF00U) >> 8);
-      bd_addr[5] = (uint8_t)((company_id & 0x00FF0000U) >> 16);
-    }
-    else
-    {
-      uint64_t fallback = GetMacAdd();
-      bd_addr[0] = (uint8_t)(fallback & 0x00000000000000FFULL);
-      bd_addr[1] = (uint8_t)((fallback & 0x000000000000FF00ULL) >> 8);
-      bd_addr[2] = (uint8_t)((fallback & 0x0000000000FF0000ULL) >> 16);
-      bd_addr[3] = (uint8_t)((fallback & 0x00000000FF000000ULL) >> 24);
-      bd_addr[4] = (uint8_t)((fallback & 0x000000FF00000000ULL) >> 32);
-      bd_addr[5] = (uint8_t)((fallback & 0x0000FF0000000000ULL) >> 40);
+      uint64_t mac = GetMacAdd();
+      bd_addr[0] = (uint8_t)(mac & 0xFFULL);
+      bd_addr[1] = (uint8_t)((mac >> 8)  & 0xFFULL);
+      bd_addr[2] = (uint8_t)((mac >> 16) & 0xFFULL);
+      bd_addr[3] = (uint8_t)((mac >> 24) & 0xFFULL);
+      bd_addr[4] = (uint8_t)((mac >> 32) & 0xFFULL);
+      bd_addr[5] = (uint8_t)((mac >> 40) & 0xFFULL);
     }
 
     ret_addr = aci_hal_write_config_data(CONFIG_DATA_PUBADDR_OFFSET,

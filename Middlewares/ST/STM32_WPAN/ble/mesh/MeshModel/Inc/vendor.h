@@ -50,6 +50,19 @@
 #define APPLI_STRING_WRITE                     0X01
 #define APPLI_STRING_READ                      0X02
 #define APPLI_DATA_READ                        0x03
+#define APPLI_SHOT_READ                        0x10
+#define APPLI_TARGET_READ                      0x11
+#define APPLI_BATTERY_READ                     0x12
+
+/****** TOEM Sub Commands for APPLI_DATA_CNTRL_CMD — forwarding vers cible *****/
+#define APPLI_UART_CMD         0x20U /* B1 = uart byte (0x01=RESET,0x02=JN,0x03=ETAT_CIBLE,0x04=REVEIL) */
+#define APPLI_TIMER_SET        0x21U /* B1 = type (0x03=Finish/0x04=NotFinish), B2 = valeur (0..255 s) */
+#define APPLI_TIMER_READ       0x22U /* B1 = type (0x03=Finish/0x04=NotFinish) */
+#define APPLI_MODE_SET         0x23U /* B1 = mode value */
+#define APPLI_MODE_READ        0x24U /* no params */
+#define APPLI_SSID_SET         0x25U /* B1..Bn = SSID string (max 16 chars) */
+#define APPLI_SSID_READ        0x26U /* no params */
+/******************************************************************************/
 
 /****************Data Received from Android/iOS. B0 = SubCommand***************/
 /********************* Sub Commands for APPLI_TEST_CMD*************************/

@@ -30,7 +30,10 @@
 #include "appli_light.h"
 #include "models_if.h"
 #include "mesh_cfg.h"
+#include "ctor10-w_data.h"
+#include "nfc_eeprom_mngt.h"
 #include <string.h>
+extern UART_HandleTypeDef hlpuart1;
 
 /** @addtogroup ST_BLE_Mesh
 *  @{
@@ -437,10 +440,20 @@ MOBLE_RESULT Appli_Vendor_LEDControl( MOBLEUINT8 const *data, MOBLEUINT32 length
 */          
 MOBLE_RESULT Appli_Vendor_Data_write(MOBLEUINT8 const *data, MOBLEUINT32 length)
 {
-  MOBLE_RESULT status = MOBLE_RESULT_SUCCESS;  
-  MOBLEUINT8 subCmd = data[0];
+  MOBLE_RESULT status = MOBLE_RESULT_SUCCESS;
+  MOBLEUINT8 subCmd;
+  MOBLEUINT8 tmp_data[VENDOR_DATA_BUFFER_SIZE - 1U];
+  MOBLEUINT8 tmp_len;
+
+  if ((data == NULL) || (length == 0U))
+  {
+    return MOBLE_RESULT_INVALIDARG;
+  }
+
+  subCmd = data[0];
   /*First Byte is sending the Sub Command*/      
-  ResponseBuffer[0]=subCmd;
+  ResponseBuffer[0] = subCmd;
+  BuffLength = 1U;
        
   TRACE_M(TF_VENDOR, "#0E-%02hx %02lx! \n\r",data[0], length);
   for(MOBLEUINT16 i=0; i<length; i++)
@@ -451,11 +464,161 @@ MOBLE_RESULT Appli_Vendor_Data_write(MOBLEUINT8 const *data, MOBLEUINT32 length)
   switch(subCmd)
   {     
     case APPLI_STRING_WRITE:
-    {            
-      memcpy(&ResponseBuffer,data,length);
-      BuffLength = length;
+    {
+      if (length > sizeof(ResponseBuffer))
+      {
+        status = MOBLE_RESULT_INVALIDARG;
+        break;
+      }
+
+      memcpy(&ResponseBuffer, data, length);
+      BuffLength = (MOBLEUINT16)length;
       break;
     }
+
+    case APPLI_SHOT_READ:
+    {
+      tmp_len = GetLastShotNotification(tmp_data, sizeof(tmp_data));
+      if (tmp_len == 0U)
+      {
+        status = MOBLE_RESULT_FALSE;
+        break;
+      }
+
+      memcpy(&ResponseBuffer[1], tmp_data, tmp_len);
+      BuffLength = (MOBLEUINT16)(1U + tmp_len);
+      break;
+    }
+
+    case APPLI_TARGET_READ:
+    {
+      tmp_len = GetLastTargetNotification(tmp_data, sizeof(tmp_data));
+      if (tmp_len == 0U)
+      {
+        status = MOBLE_RESULT_FALSE;
+        break;
+      }
+
+      memcpy(&ResponseBuffer[1], tmp_data, tmp_len);
+      BuffLength = (MOBLEUINT16)(1U + tmp_len);
+      break;
+    }
+
+    case APPLI_BATTERY_READ:
+    {
+      ResponseBuffer[1] = GetLastBatteryLevel();
+      BuffLength = 2U;
+      break;
+    }
+
+    case APPLI_UART_CMD:
+    {
+      /* Forward 1 byte vers UART (RESET=0x01, JN=0x02, ETAT_CIBLE=0x03, REVEIL=0x04) */
+      if (length < 2U)
+      {
+        status = MOBLE_RESULT_INVALIDARG;
+        break;
+      }
+      MOBLEUINT8 uart_byte = data[1];
+      HAL_UART_Transmit(&hlpuart1, &uart_byte, 1U, 1000U);
+      break;
+    }
+
+    case APPLI_TIMER_SET:
+    {
+      /* [subcmd, type(0x03=Finish/0x04=NotFinish), value_seconds] */
+      if (length < 3U)
+      {
+        status = MOBLE_RESULT_INVALIDARG;
+        break;
+      }
+      if (data[1] == 0x03U)
+      {
+        SetResetTimerValFinish(data[2]);
+      }
+      else if (data[1] == 0x04U)
+      {
+        SetResetTimerValNotFinish(data[2]);
+      }
+      else
+      {
+        status = MOBLE_RESULT_INVALIDARG;
+      }
+      break;
+    }
+
+    case APPLI_TIMER_READ:
+    {
+      /* [subcmd, type(0x03=Finish/0x04=NotFinish)] → répond valeur */
+      if (length < 2U)
+      {
+        status = MOBLE_RESULT_INVALIDARG;
+        break;
+      }
+      if (data[1] == 0x03U)
+      {
+        ResponseBuffer[1] = GetResetTimerValFinish();
+      }
+      else if (data[1] == 0x04U)
+      {
+        ResponseBuffer[1] = GetResetTimerValNotFinish();
+      }
+      else
+      {
+        status = MOBLE_RESULT_INVALIDARG;
+        break;
+      }
+      BuffLength = 2U;
+      break;
+    }
+
+    case APPLI_MODE_SET:
+    {
+      /* [subcmd, mode_value] */
+      if (length < 2U)
+      {
+        status = MOBLE_RESULT_INVALIDARG;
+        break;
+      }
+      SetMode(data[1]);
+      break;
+    }
+
+    case APPLI_MODE_READ:
+    {
+      /* répond avec la valeur de mode courante */
+      ResponseBuffer[1] = GetMode();
+      BuffLength = 2U;
+      break;
+    }
+
+    case APPLI_SSID_SET:
+    {
+      /* [subcmd, ...string... (max 16 chars)] */
+      if (length < 2U || length > 17U)
+      {
+        status = MOBLE_RESULT_INVALIDARG;
+        break;
+      }
+      char ssid_buf[17];
+      MOBLEUINT8 ssid_len = (MOBLEUINT8)(length - 1U);
+      memset(ssid_buf, 0, sizeof(ssid_buf));
+      memcpy(ssid_buf, &data[1], ssid_len);
+      SetSSIDName(ssid_buf);
+      break;
+    }
+
+    case APPLI_SSID_READ:
+    {
+      /* répond avec le SSID stocké en EEPROM */
+      const char *ssid = GetSSIDName();
+      MOBLEUINT8 ssid_len = (MOBLEUINT8)strlen(ssid);
+      if (ssid_len > 16U) ssid_len = 16U;
+      memcpy(&ResponseBuffer[1], ssid, ssid_len);
+      BuffLength = (MOBLEUINT16)(1U + ssid_len);
+      break;
+    }
+
     default:
     {
       status = MOBLE_RESULT_FALSE;
