@@ -679,16 +679,17 @@ void Appli_BleGattDisconnectionCompleteCb(void)
   ProxyFlag = 0;
   BSP_LED_Off(LED_GREEN);
 
-  /* Fallback path: some provisioners do not raise ConfigurationCallback reliably.
-   * If we already saw successful config traffic, exit runtime on disconnect. */
+  /* PB-GATT provisioning is complete as soon as the mesh library reports the
+   * node provisioned.  Configuration traffic (AppKey/bind/subscription) is a
+   * later optional phase and must not keep the persisted boot result UNKNOWN. */
   if (IsProvisioningRuntimeSessionActive() &&
-      (BLEMesh_IsUnprovisioned() == MOBLE_FALSE) &&
-      (ProvisioningConfigActivitySeen != 0U))
+      (BLEMesh_IsUnprovisioned() == MOBLE_FALSE))
   {
     if (ProvisioningSessionCommitPending == 0U)
     {
       ProvisioningSessionCommitPending = 1U;
-      TRACE_I(TF_PROVISION,"Provisioning session completed (configured/disconnect), manual power cycle required for GATT mode\r\n");
+      TRACE_I(TF_PROVISION,"Provisioning session completed (disconnect, config_seen=%u)\r\n",
+              ProvisioningConfigActivitySeen);
       UTIL_SEQ_SetTask( 1<<CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
     }
   }
@@ -1680,7 +1681,7 @@ void IntensityPublish(void)
 */
 void Appli_Process(void)
 {
-#ifdef ENABLE_SAVE_MODEL_STATE_NVM  
+#ifdef ENABLE_SAVE_MODEL_STATE_NVM
   AppliNvm_Process();
 #endif
   
