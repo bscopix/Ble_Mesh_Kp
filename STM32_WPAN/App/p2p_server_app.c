@@ -50,6 +50,7 @@
 #define P2P_CTRL_OPCODE_ENTER_PROVISIONING          0x0AU
 #define P2P_CTRL_OPCODE_CANCEL_PROVISIONING         0x0BU
 #define P2P_CTRL_OPCODE_MESH_HARD_FACTORY_RESET     0x0CU
+#define P2P_CTRL_OPCODE_SOFT_REBOOT                 0x0DU
 
 #define P2P_CTRL_STATUS_OK                          0x00U
 #define P2P_CTRL_STATUS_BAD_LENGTH                  0x01U
@@ -130,6 +131,20 @@ void P2PS_STM_App_Notification(P2PS_STM_App_Notification_evt_t *pNotification)
       if (pNotification->DataTransfered.Length > 0U)
       {
         uint8_t opcode = pNotification->DataTransfered.pPayload[0];
+
+        if (opcode == P2P_CTRL_OPCODE_SOFT_REBOOT)
+        {
+          /* On attend 1 octet (opcode seul) */
+          if (pNotification->DataTransfered.Length != 1U)
+          {
+            P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_BAD_LENGTH, NULL, 0U);
+            break;
+          }
+          P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_OK, NULL, 0U);
+          APP_DBG_MSG("SOFT_REBOOT accepted\r\n");
+          HAL_Delay(100U);
+          NVIC_SystemReset();
+        }
 
         if ((opcode == P2P_CTRL_OPCODE_MESH_DEPROVISION)
           || (opcode == P2P_CTRL_OPCODE_GET_PROVISIONING_STATUS)

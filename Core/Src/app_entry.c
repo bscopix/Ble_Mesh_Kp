@@ -377,6 +377,18 @@ static void appe_Tl_Init(void)
   tl_mm_config.AsynchEvtPoolSize = POOL_SIZE;
   TL_MM_Init(&tl_mm_config);
 
+  /**
+   * If CPU2 was already booted (e.g. after a debugger soft-reset that only
+   * resets CPU1), send SHCI_C2_Reinit so CPU2 waits for a new C2BOOT event.
+   * TL_Enable() will then re-trigger it properly.
+   * On a clean power-on the C2BOOT bit is 0 and this branch is skipped.
+   */
+  if ((READ_BIT(PWR->CR4, PWR_CR4_C2BOOT)) != 0UL)
+  {
+    APP_DBG_MSG(">>== CPU2 already booted, sending SHCI_C2_Reinit\n\r");
+    SHCI_C2_Reinit();
+  }
+
   TL_Enable();
 
   return;
