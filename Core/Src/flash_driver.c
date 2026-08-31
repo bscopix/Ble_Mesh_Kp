@@ -79,22 +79,16 @@ uint32_t FD_EraseSectors(uint32_t FirstSector, uint32_t NbrOfSectors)
   }
   else
   {
-    /**
-     *  Notify the CPU2 there will be no request anymore to erase the flash
-     *  On reception of this command, the CPU2 will disables the BLE timing protection versus flash erase processing
-     *  The protection is active until next end of radio event.
-     */
-    SHCI_C2_FLASH_EraseActivity(ERASE_ACTIVITY_OFF);
-
-    HAL_FLASH_Lock();
-
-    /**
-     *  Release the ownership of the Flash IP
-     */
-    LL_HSEM_ReleaseLock(HSEM, CFG_HW_FLASH_SEMID, 0);
-
     return_value = 0;
   }
+
+  /* Always unwind the CPU1/CPU2 flash transaction, including when radio
+   * timing protection refused one erase.  Keeping ERASE_ACTIVITY enabled or
+   * CFG_HW_FLASH_SEMID locked poisons the following retry and can also leave
+   * the BLE controller in an invalid advertising state. */
+  SHCI_C2_FLASH_EraseActivity(ERASE_ACTIVITY_OFF);
+  HAL_FLASH_Lock();
+  LL_HSEM_ReleaseLock(HSEM, CFG_HW_FLASH_SEMID, 0);
 
   return return_value;
 }
@@ -125,15 +119,13 @@ uint32_t FD_WriteData(uint32_t DestAddress, uint64_t * pSrcBuffer, uint32_t NbrO
   }
   else
   {
-    HAL_FLASH_Lock();
-
-    /**
-     *  Release the ownership of the Flash IP
-     */
-    LL_HSEM_ReleaseLock(HSEM, CFG_HW_FLASH_SEMID, 0);
-
     return_value = 0;
   }
+
+  /* A rejected write still owns CFG_HW_FLASH_SEMID.  Release it before the
+   * PAL retries, otherwise the same CPU spins forever trying to reacquire it. */
+  HAL_FLASH_Lock();
+  LL_HSEM_ReleaseLock(HSEM, CFG_HW_FLASH_SEMID, 0);
 
   return return_value;
 }

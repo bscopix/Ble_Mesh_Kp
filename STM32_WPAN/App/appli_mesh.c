@@ -202,6 +202,7 @@ MOBLEUINT8 pPropertyId[4];
 static uint8_t ProvisioningConfigActivitySeen = 0U;
 static uint8_t ProvisioningTimeoutNotified = 0U;
 static uint8_t ProvisioningSessionCommitPending = 0U;
+static uint8_t MeshConfigCommitPending = 0U;
 
 static MOBLE_RESULT Appli_EraseProvisioningStorage(void)
 {
@@ -480,7 +481,8 @@ static void Mesh_Task()
 */ 
 static void Appli_Task()
 {
-  if (ProvisioningSessionCommitPending != 0U)
+  if ((ProvisioningSessionCommitPending != 0U) ||
+      (MeshConfigCommitPending != 0U))
   {
     MOBLE_RESULT nvm_result = PalNvmProcess();
 
@@ -489,17 +491,17 @@ static void Appli_Task()
      * connected, hence this task is armed by the disconnect callback. */
     if ((nvm_result != MOBLE_RESULT_SUCCESS) || (nvm_operation != 0U))
     {
-      TRACE_I(TF_PROVISION,"Provisioning commit waiting for Mesh NVM op=%u result=%d\r\n",
+      TRACE_I(TF_PROVISION,"Mesh commit waiting for NVM op=%u result=%d\r\n",
               (unsigned int)nvm_operation,
               nvm_result);
       UTIL_SEQ_SetTask(1UL << CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
       return;
     }
 
-    ProvisioningSessionCommitPending = 0U;
-
     if (IsProvisioningRuntimeSessionActive())
     {
+      ProvisioningSessionCommitPending = 0U;
+      MeshConfigCommitPending = 0U;
       StopProvisioningRuntimeSession(PROVISION_RESULT_SUCCESS);
 
       /* Provisioning is complete before configuration starts. Persist the
@@ -515,6 +517,20 @@ static void Appli_Task()
       {
         TRACE_I(TF_PROVISION,"Provisioning committed but mode NVM write failed; keep runtime alive\r\n");
       }
+    }
+    else if (MeshConfigCommitPending != 0U)
+    {
+      /* Config Server traffic and the following flash rotation coincide with
+       * the ST library rearming Proxy advertising.  Some controller/library
+       * states keep transmitting an empty, non-connectable advertisement.
+       * Once the verified NVM transaction is complete, reboot CPU1/CPU2 so
+       * the Proxy service is rebuilt from a clean persisted configuration. */
+      MeshConfigCommitPending = 0U;
+      ProvisioningSessionCommitPending = 0U;
+      ProvisioningConfigActivitySeen = 0U;
+      TRACE_I(TF_PROVISION,"Mesh configuration committed: controlled Proxy restart\r\n");
+      ModeManager_ScheduleReset();
+      return;
     }
   }
 
@@ -727,6 +743,17 @@ void Appli_BleGattDisconnectionCompleteCb(void)
       TRACE_I(TF_PROVISION,"Provisioning session completed (disconnect, config_seen=%u)\r\n",
               ProvisioningConfigActivitySeen);
     }
+    UTIL_SEQ_SetTask(1UL << CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
+  }
+  else if ((BLEMesh_IsUnprovisioned() == MOBLE_FALSE) &&
+           ((ProvisioningConfigActivitySeen != 0U) || (nvm_operation != 0U)))
+  {
+    /* Only configuration-changing Proxy sessions are restarted.  Ordinary
+     * Proxy disconnects (vendor traffic, status reads...) remain seamless. */
+    MeshConfigCommitPending = 1U;
+    TRACE_I(TF_PROVISION,
+            "Mesh configuration disconnect: commit op=%u then restart Proxy\r\n",
+            (unsigned int)nvm_operation);
     UTIL_SEQ_SetTask(1UL << CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
   }
 }
