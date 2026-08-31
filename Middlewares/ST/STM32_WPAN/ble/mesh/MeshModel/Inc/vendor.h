@@ -53,6 +53,17 @@
 #define APPLI_SHOT_READ                        0x10
 #define APPLI_TARGET_READ                      0x11
 #define APPLI_BATTERY_READ                     0x12
+#define APPLI_SHOT_EVENT                       0x13U /* [subcmd, event_seq_u32_le, shot(13)] */
+#define APPLI_TARGET_EVENT                     0x14U /* [subcmd, event_seq_u32_le, target(4)] */
+#define APPLI_RAW_EVENT                        0x15U /* Reserved; push disabled by default */
+#define APPLI_BATTERY_EVENT                    0x16U /* [subcmd, event_seq_u32_le, level] */
+#define APPLI_SHOT_QUEUE_STATUS                0x17U /* oldest/next sequence and count */
+#define APPLI_SHOT_QUEUE_READ                  0x18U /* B1..B4 = absolute shot sequence */
+#define APPLI_RAW_READ                         0x19U /* Last decoded 20-byte UART frame */
+#define APPLI_HW_REV_READ                      0x1AU
+#define APPLI_FW_VER_READ                      0x1BU
+#define APPLI_MODEL_READ                       0x1CU
+#define APPLI_MANUFACTURER_READ                0x1DU
 
 /****** TOEM Sub Commands for APPLI_DATA_CNTRL_CMD — forwarding vers cible *****/
 #define APPLI_UART_CMD         0x20U /* B1 = uart byte (0x01=RESET,0x02=JN,0x03=ETAT_CIBLE,0x04=REVEIL) */
@@ -184,4 +195,3 @@ MOBLE_RESULT VendorModel_PID1_ProcessMessageCb(MODEL_MessageHeader_t *pmsgParams
                                                    );
 
 #endif /* __VENDOR_H */
-

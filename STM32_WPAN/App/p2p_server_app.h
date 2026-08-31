@@ -83,6 +83,7 @@ typedef struct
   void storeRawData(uint8_t *data, int lenght );
   void storeShotData(uint8_t *data, int lenght );
   void storeTargetData(uint8_t *data, int lenght );
+  uint8_t P2PS_GetLastRawNotification(uint8_t *dst, uint8_t max_len);
 extern P2P_Server_App_Context_t P2P_Server_App_Context;
 /* USER CODE END EF */
 

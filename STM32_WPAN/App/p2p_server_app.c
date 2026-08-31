@@ -417,6 +417,25 @@ void storeTargetData(uint8_t *data, int lenght )
 
 	memcpy(P2P_Server_App_Context.TargetToNotification, data, (size_t)lenght);
 }
+
+uint8_t P2PS_GetLastRawNotification(uint8_t *dst, uint8_t max_len)
+{
+  uint8_t copy_len = NOTIFY_RAW_SIZE;
+
+  if ((dst == NULL) || (max_len == 0U))
+  {
+    return 0U;
+  }
+
+  if (copy_len > max_len)
+  {
+    copy_len = max_len;
+  }
+
+  memcpy(dst, P2P_Server_App_Context.RawTargetToNotification, copy_len);
+  return copy_len;
+}
+
 void P2PS_APP_RAW_Action(void)
 {
   UTIL_SEQ_SetTask( 1<<CFG_TASK_RAW_NOTIFICATION_ID, CFG_SCH_PRIO_4);
