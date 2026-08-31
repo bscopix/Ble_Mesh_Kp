@@ -28,6 +28,7 @@
 #include "nfc_eeprom_mngt.h"
 #include "ble_mesh.h"
 #include "appli_mesh.h"
+#include "mode_manager.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -51,6 +52,9 @@
 #define P2P_CTRL_OPCODE_CANCEL_PROVISIONING         0x0BU
 #define P2P_CTRL_OPCODE_MESH_HARD_FACTORY_RESET     0x0CU
 #define P2P_CTRL_OPCODE_SOFT_REBOOT                 0x0DU
+#define P2P_CTRL_OPCODE_ENTER_MESH                  0x10U
+#define P2P_CTRL_OPCODE_GET_MODE_STATUS             0x11U
+#define P2P_CTRL_OPCODE_GET_CAPABILITIES            0x12U
 
 #define P2P_CTRL_STATUS_OK                          0x00U
 #define P2P_CTRL_STATUS_BAD_LENGTH                  0x01U
@@ -150,7 +154,10 @@ void P2PS_STM_App_Notification(P2PS_STM_App_Notification_evt_t *pNotification)
           || (opcode == P2P_CTRL_OPCODE_GET_PROVISIONING_STATUS)
             || (opcode == P2P_CTRL_OPCODE_ENTER_PROVISIONING)
             || (opcode == P2P_CTRL_OPCODE_CANCEL_PROVISIONING)
-            || (opcode == P2P_CTRL_OPCODE_MESH_HARD_FACTORY_RESET))
+            || (opcode == P2P_CTRL_OPCODE_MESH_HARD_FACTORY_RESET)
+            || (opcode == P2P_CTRL_OPCODE_ENTER_MESH)
+            || (opcode == P2P_CTRL_OPCODE_GET_MODE_STATUS)
+            || (opcode == P2P_CTRL_OPCODE_GET_CAPABILITIES))
         {
           if (pNotification->DataTransfered.Length <= P2P_CTRL_MAX_WRITE_LEN)
           {
@@ -357,6 +364,7 @@ void P2PS_APP_Init(void)
   UTIL_SEQ_RegTask( 1<< CFG_TASK_SHOT_NOTIFICATION_ID, UTIL_SEQ_RFU, P2PS_Send_Shot_Notification );
   UTIL_SEQ_RegTask( 1<< CFG_TASK_TARGET_NOTIFICATION_ID, UTIL_SEQ_RFU, P2PS_Send_Target_Notification );
   UTIL_SEQ_RegTask( 1<< CFG_TASK_P2P_CTRL_REQ_ID, UTIL_SEQ_RFU, P2PS_Process_Pending_Ctrl_Write );
+  ModeManager_RegisterTasks();
 
   P2P_Server_App_Context.ShotNotification_Status=0; 
 	P2P_Server_App_Context.RawNotification_Status=0;
@@ -469,8 +477,13 @@ void P2PS_Send_Target_Notification(void)
 
 static void P2PS_Send_Ctl_Response(uint8_t request_opcode, uint8_t status, const uint8_t *payload, uint8_t payload_len)
 {
-  uint8_t response[7U];
+  uint8_t response[P2P_CTRL_MAX_WRITE_LEN];
   uint8_t tx_len = (uint8_t)(3U + payload_len);
+
+  if (tx_len > sizeof(response))
+  {
+    return;
+  }
 
   response[0] = (uint8_t)(request_opcode | 0x80U);
   response[1] = status;
@@ -547,6 +560,11 @@ static void P2PS_Handle_Mesh_Control_Write(const uint8_t *payload, uint8_t lengt
   uint8_t status_payload[4U];
   uint16_t timeout_s;
   MOBLE_RESULT mesh_result;
+  ModeStatus_t mode_status;
+  uint8_t mode_payload[12U];
+  uint8_t capability_payload[6U];
+  uint32_t transition_id;
+  uint32_t capabilities;
 
   if ((payload == NULL) || (length == 0U))
   {
@@ -602,6 +620,7 @@ static void P2PS_Handle_Mesh_Control_Write(const uint8_t *payload, uint8_t lengt
       }
 
       ClearProvisioningBootRequest(PROVISION_RESULT_UNKNOWN);
+      (void)ModeManager_RequestMode(BOOT_MODE_LEGACY_GATT, 0U);
       P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_OK, NULL, 0U);
       APP_DBG_MSG("MESH_DEPROVISION accepted: rebooting node\r\n");
       HAL_Delay(100U);
@@ -623,6 +642,12 @@ static void P2PS_Handle_Mesh_Control_Write(const uint8_t *payload, uint8_t lengt
       }
 
       timeout_s = (uint16_t)payload[2] | ((uint16_t)payload[3] << 8);
+      if (!ModeManager_RequestMode(BOOT_MODE_MESH_PROVISIONING, 0U))
+      {
+        P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_INTERNAL_ERROR, NULL, 0U);
+        APP_DBG_MSG("ENTER_PROVISIONING rejected: mode NVM write failed\r\n");
+        break;
+      }
       SetProvisioningBootRequest(timeout_s, PROVISION_REASON_GATT);
       P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_OK, NULL, 0U);
       APP_DBG_MSG("Provisioning boot requested via GATT (timeout=%u s)\r\n", timeout_s);
@@ -638,6 +663,7 @@ static void P2PS_Handle_Mesh_Control_Write(const uint8_t *payload, uint8_t lengt
       }
 
       ClearProvisioningBootRequest(PROVISION_RESULT_UNKNOWN);
+      (void)ModeManager_RequestMode(BOOT_MODE_LEGACY_GATT, 0U);
       P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_OK, NULL, 0U);
       APP_DBG_MSG("Provisioning boot request canceled via GATT\r\n");
       break;
@@ -661,9 +687,77 @@ static void P2PS_Handle_Mesh_Control_Write(const uint8_t *payload, uint8_t lengt
       }
 
       P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_OK, NULL, 0U);
+      (void)ModeManager_RequestMode(BOOT_MODE_LEGACY_GATT, 0U);
       APP_DBG_MSG("MESH_HARD_FACTORY_RESET accepted: rebooting node\r\n");
       HAL_Delay(100U);
       NVIC_SystemReset();
+      break;
+
+    case P2P_CTRL_OPCODE_ENTER_MESH:
+      if (declared_payload_len != 4U)
+      {
+        P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_BAD_LENGTH, NULL, 0U);
+        break;
+      }
+      if (GetProvisioningResult() != PROVISION_RESULT_SUCCESS)
+      {
+        P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_BAD_STATE, NULL, 0U);
+        break;
+      }
+      transition_id = (uint32_t)payload[2]
+                    | ((uint32_t)payload[3] << 8)
+                    | ((uint32_t)payload[4] << 16)
+                    | ((uint32_t)payload[5] << 24);
+      if (!ModeManager_RequestMode(BOOT_MODE_MESH_OPERATIONAL, transition_id))
+      {
+        P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_INTERNAL_ERROR, NULL, 0U);
+        break;
+      }
+      P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_OK, &payload[2], 4U);
+      APP_DBG_MSG("ENTER_MESH accepted: transition=%08lx\r\n",
+                  (unsigned long)transition_id);
+      HAL_Delay(100U);
+      NVIC_SystemReset();
+      break;
+
+    case P2P_CTRL_OPCODE_GET_MODE_STATUS:
+      if (declared_payload_len != 0U)
+      {
+        P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_BAD_LENGTH, NULL, 0U);
+        break;
+      }
+      ModeManager_GetStatus(&mode_status);
+      mode_payload[0] = MODE_PROTOCOL_VERSION;
+      mode_payload[1] = mode_status.actual_mode;
+      mode_payload[2] = mode_status.requested_mode;
+      mode_payload[3] = mode_status.transition_in_progress;
+      mode_payload[4] = mode_status.provision_result;
+      mode_payload[5] = mode_status.last_error;
+      mode_payload[6] = mode_status.consecutive_unplanned_resets;
+      mode_payload[7] = 0U;
+      mode_payload[8] = (uint8_t)(mode_status.transition_id & 0xFFU);
+      mode_payload[9] = (uint8_t)((mode_status.transition_id >> 8) & 0xFFU);
+      mode_payload[10] = (uint8_t)((mode_status.transition_id >> 16) & 0xFFU);
+      mode_payload[11] = (uint8_t)((mode_status.transition_id >> 24) & 0xFFU);
+      P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_OK,
+                             mode_payload, sizeof(mode_payload));
+      break;
+
+    case P2P_CTRL_OPCODE_GET_CAPABILITIES:
+      if (declared_payload_len != 0U)
+      {
+        P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_BAD_LENGTH, NULL, 0U);
+        break;
+      }
+      capabilities = ModeManager_GetCapabilities();
+      capability_payload[0] = MODE_PROTOCOL_VERSION;
+      capability_payload[1] = (uint8_t)(capabilities & 0xFFU);
+      capability_payload[2] = (uint8_t)((capabilities >> 8) & 0xFFU);
+      capability_payload[3] = (uint8_t)((capabilities >> 16) & 0xFFU);
+      capability_payload[4] = (uint8_t)((capabilities >> 24) & 0xFFU);
+      capability_payload[5] = P2P_CTRL_MAX_WRITE_LEN;
+      P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_OK,
+                             capability_payload, sizeof(capability_payload));
       break;
 
     default:

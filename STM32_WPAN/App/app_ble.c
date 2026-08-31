@@ -41,6 +41,8 @@
 #include "nfc_eeprom_mngt.h"
 #include "mesh_cfg_usr.h"
 #include "appli_mesh.h"
+#include "mode_manager.h"
+#include "stm32wbxx_it.h"
 extern void HCI_Event_CB(void *p_Pckt);
 /* USER CODE END Includes */
 
@@ -442,6 +444,8 @@ void APP_BLE_Init(void)
   provision_result = GetProvisioningResult();
   provisioning_boot_requested = (uint8_t)(IsProvisioningBootRequested() ? 1U : 0U);
   reset_flags = RCC->CSR;
+  ModeManager_Init(reset_flags);
+  FaultContext_ReportAndClear();
   APP_DBG_MSG("==>> Reset flags: CSR=0x%08x PIN=%u POR=%u SFT=%u IWDG=%u WWDG=%u LPWR=%u\n",
               reset_flags,
               (reset_flags & RCC_CSR_PINRSTF) ? 1U : 0U,
@@ -455,6 +459,10 @@ void APP_BLE_Init(void)
               (provision_result == PROVISION_RESULT_SUCCESS) ? "PROVISIONED" : "UNPROVISIONED_OR_UNKNOWN",
               provision_result,
               provisioning_boot_requested);
+  APP_DBG_MSG("==>> Boot mode: %u (persistent=%u mesh=%u)\n",
+              (unsigned int)ModeManager_GetBootMode(),
+              ModeManager_IsPersistentStateValid() ? 1U : 0U,
+              ModeManager_ShouldStartMesh() ? 1U : 0U);
   /* USER CODE END APP_BLE_Init_1 */
   SHCI_C2_Ble_Init_Cmd_Packet_t ble_init_cmd_packet =
   {
@@ -1084,41 +1092,12 @@ static void APP_BLE_HandleDisconnectEvent(uint16_t connection_handle, uint8_t re
 
 static uint8_t APP_BLE_IsMeshOwningAdvertising(void)
 {
-  const uint8_t runtime_active = (uint8_t)(IsProvisioningRuntimeSessionActive() ? 1U : 0U);
-  const uint8_t provision_result = GetProvisioningResult();
-
-  if (runtime_active != 0U)
-  {
-    return 1U;
-  }
-
-  if (provision_result == PROVISION_RESULT_SUCCESS)
-  {
-    if (BLEMesh_IsUnprovisioned() != MOBLE_FALSE)
-    {
-      APP_DBG_MSG("==>> Provisioning state mismatch: persisted success, mesh reports unprovisioned (keeping mesh ownership)\n");
-    }
-
-    /* Persisted provisioned state keeps mesh ownership; do not auto-clear or reset. */
-    return 1U;
-  }
-
-  return 0U;
+  return ModeManager_ShouldStartMesh() ? 1U : 0U;
 }
 
 static uint8_t APP_BLE_ShouldForwardMeshEvents(void)
 {
-  if (IsProvisioningRuntimeSessionActive())
-  {
-    return 1U;
-  }
-
-  if (GetProvisioningResult() == PROVISION_RESULT_SUCCESS)
-  {
-    return 1U;
-  }
-
-  return 0U;
+  return ModeManager_ShouldStartMesh() ? 1U : 0U;
 }
 
 /* USER CODE BEGIN FD*/

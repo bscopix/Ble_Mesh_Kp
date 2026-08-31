@@ -37,6 +37,7 @@
 #include "appli_nvm.h"
 #include "pal_nvm.h"
 #include "mesh_cfg.h"
+#include "mode_manager.h"
 
 /* Private includes -----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -47,6 +48,7 @@
 extern RTC_HandleTypeDef hrtc;
 extern const void *mobleNvmBase;
 extern const void *appNvmBase;
+extern const void *modeNvmBase;
 extern const void *prvsnr_data;
 
 /* USER CODE BEGIN PTD */
@@ -92,6 +94,13 @@ static void APPE_SysEvtReadyProcessing(void * pPayload);
 static void APPE_SysEvtError(void * pPayload);
 static void Init_Rtc(void);
 static const char *APPE_GetStackTypeString(uint8_t stackType);
+static void APPE_IwdgInit(void);
+static void APPE_IwdgWakeup(void);
+
+static IWDG_HandleTypeDef happe_iwdg;
+static uint8_t appe_iwdg_timer_id;
+
+#define APPE_IWDG_WAKEUP_INTERVAL (10UL * (1000000UL / CFG_TS_TICK_VAL))
 
 /* BLE Mesh library compatibility: map legacy permit_read API to current allow/deny APIs. */
 tBleStatus aci_gatt_permit_read(uint16_t Connection_Handle,
@@ -131,6 +140,10 @@ void MX_APPE_Config(void)
   /* Configure HSE Tuning */
   Config_HSE();
 
+  /* Start recovery coverage before peripheral/NFC/application init. The long
+   * timeout leaves normal boot ample time but breaks out of early init loops. */
+  APPE_IwdgInit();
+
   return;
 }
 
@@ -140,14 +153,17 @@ void MX_APPE_Init(void)
   uint32_t last_user_flash_address = ((READ_BIT(FLASH->SFR, FLASH_SFR_SFSA) >> FLASH_SFR_SFSA_Pos) << 11) + FLASH_BASE;
   const uint32_t app_nvm_size = 2048U;
   const uint32_t prvn_nvm_page_size = 2048U;
+  const uint32_t mode_nvm_size = 4096U;
 #elif defined(STM32WB55xx) || defined(STM32WB5Mxx)
   uint32_t last_user_flash_address = ((READ_BIT(FLASH->SFR, FLASH_SFR_SFSA) >> FLASH_SFR_SFSA_Pos) << 12) + FLASH_BASE;
   const uint32_t app_nvm_size = 4096U;
   const uint32_t prvn_nvm_page_size = 4096U;
+  const uint32_t mode_nvm_size = 8192U;
 #else
   uint32_t last_user_flash_address = FLASH_BASE + FLASH_SIZE;
   const uint32_t app_nvm_size = 4096U;
   const uint32_t prvn_nvm_page_size = 4096U;
+  const uint32_t mode_nvm_size = 8192U;
 #endif
 
   System_Init();       /**< System initialization */
@@ -155,6 +171,13 @@ void MX_APPE_Init(void)
   SystemPower_Config(); /**< Configure the system Power Mode */
 
   HW_TS_Init(hw_ts_InitMode_Full, &hrtc); /**< Initialize the TimerServer */
+  /* The callback intentionally does not feed the watchdog. It only wakes CPU1
+   * from long low-power idle; the sequencer must return before refresh. */
+  HW_TS_Create(CFG_TIM_PROC_ID_ISR,
+               &appe_iwdg_timer_id,
+               hw_ts_Repeated,
+               APPE_IwdgWakeup);
+  HW_TS_Start(appe_iwdg_timer_id, APPE_IWDG_WAKEUP_INTERVAL);
 
 /* USER CODE BEGIN APPE_Init_1 */
 	APPD_Init();
@@ -163,11 +186,16 @@ void MX_APPE_Init(void)
   mobleNvmBase = (const void *)(last_user_flash_address - NVM_SIZE);
   appNvmBase   = (const void *)(last_user_flash_address - NVM_SIZE - app_nvm_size);
   prvsnr_data  = (const void *)(last_user_flash_address - NVM_SIZE - app_nvm_size - prvn_nvm_page_size);
+  /* Two application-owned pages form an atomic journal for mode transitions.
+   * Existing Mesh/application/provisioner NVM addresses remain unchanged. */
+  modeNvmBase  = (const void *)(last_user_flash_address - NVM_SIZE - app_nvm_size
+                                - prvn_nvm_page_size - mode_nvm_size);
 
-  TRACE_I(TF_INIT,"NVM bases: mesh=0x%08lx app=0x%08lx prv=0x%08lx\r\n",
+  TRACE_I(TF_INIT,"NVM bases: mesh=0x%08lx app=0x%08lx prv=0x%08lx mode=0x%08lx\r\n",
           (unsigned long)mobleNvmBase,
           (unsigned long)appNvmBase,
-          (unsigned long)prvsnr_data);
+          (unsigned long)prvsnr_data,
+          (unsigned long)modeNvmBase);
 /* USER CODE END APPE_Init_1 */
   appe_Tl_Init();	/* Initialize all transport layers */
 
@@ -650,17 +678,39 @@ void MX_APPE_Process(void)
 
   /* USER CODE END MX_APPE_Process_1 */
   UTIL_SEQ_Run(UTIL_SEQ_DEFAULT);
+  (void)HAL_IWDG_Refresh(&happe_iwdg);
   /* USER CODE BEGIN MX_APPE_Process_2 */
-
+  ModeManager_HealthPoll();
   /* USER CODE END MX_APPE_Process_2 */
 }
 
 void UTIL_SEQ_Idle(void)
 {
+  /* An idle sequencer is healthy on CPU1. Refresh immediately before sleep;
+   * a task/callback that never returns cannot reach this point. */
+  (void)HAL_IWDG_Refresh(&happe_iwdg);
 #if (CFG_LPM_SUPPORTED == 1)
   UTIL_LPM_EnterLowPower();
 #endif /* CFG_LPM_SUPPORTED == 1 */
   return;
+}
+
+static void APPE_IwdgInit(void)
+{
+  happe_iwdg.Instance = IWDG;
+  happe_iwdg.Init.Prescaler = IWDG_PRESCALER_256;
+  happe_iwdg.Init.Reload = 4095U;
+  happe_iwdg.Init.Window = IWDG_WINDOW_DISABLE;
+
+  if (HAL_IWDG_Init(&happe_iwdg) != HAL_OK)
+  {
+    NVIC_SystemReset();
+  }
+}
+
+static void APPE_IwdgWakeup(void)
+{
+  /* Wakeup-only heartbeat. See registration in MX_APPE_Init(). */
 }
 
 /**

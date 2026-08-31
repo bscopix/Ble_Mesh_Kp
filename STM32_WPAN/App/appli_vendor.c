@@ -32,6 +32,7 @@
 #include "mesh_cfg.h"
 #include "ctor10-w_data.h"
 #include "nfc_eeprom_mngt.h"
+#include "mode_manager.h"
 #include <string.h>
 extern UART_HandleTypeDef hlpuart1;
 
@@ -616,6 +617,63 @@ MOBLE_RESULT Appli_Vendor_Data_write(MOBLEUINT8 const *data, MOBLEUINT32 length)
       if (ssid_len > 16U) ssid_len = 16U;
       memcpy(&ResponseBuffer[1], ssid, ssid_len);
       BuffLength = (MOBLEUINT16)(1U + ssid_len);
+      break;
+    }
+
+    case APPLI_ENTER_GATT_MAINTENANCE:
+    {
+      uint32_t transition_id;
+
+      if (length != 5U)
+      {
+        status = MOBLE_RESULT_INVALIDARG;
+        ResponseBuffer[1] = 0x01U;
+        BuffLength = 2U;
+        break;
+      }
+
+      transition_id = (uint32_t)data[1]
+                    | ((uint32_t)data[2] << 8)
+                    | ((uint32_t)data[3] << 16)
+                    | ((uint32_t)data[4] << 24);
+      if (!ModeManager_RequestMode(BOOT_MODE_GATT_MAINTENANCE, transition_id))
+      {
+        status = MOBLE_RESULT_FALSE;
+        ResponseBuffer[1] = 0x04U;
+        BuffLength = 2U;
+        break;
+      }
+
+      ResponseBuffer[1] = 0x00U;
+      memcpy(&ResponseBuffer[2], &data[1], 4U);
+      BuffLength = 6U;
+      ModeManager_ScheduleReset();
+      break;
+    }
+
+    case APPLI_GET_MODE_STATUS:
+    {
+      ModeStatus_t mode_status;
+
+      if (length != 1U)
+      {
+        status = MOBLE_RESULT_INVALIDARG;
+        break;
+      }
+
+      ModeManager_GetStatus(&mode_status);
+      ResponseBuffer[1] = MODE_PROTOCOL_VERSION;
+      ResponseBuffer[2] = mode_status.actual_mode;
+      ResponseBuffer[3] = mode_status.requested_mode;
+      ResponseBuffer[4] = mode_status.transition_in_progress;
+      ResponseBuffer[5] = mode_status.provision_result;
+      ResponseBuffer[6] = mode_status.last_error;
+      ResponseBuffer[7] = mode_status.consecutive_unplanned_resets;
+      ResponseBuffer[8] = (uint8_t)(mode_status.transition_id & 0xFFU);
+      ResponseBuffer[9] = (uint8_t)((mode_status.transition_id >> 8) & 0xFFU);
+      ResponseBuffer[10] = (uint8_t)((mode_status.transition_id >> 16) & 0xFFU);
+      ResponseBuffer[11] = (uint8_t)((mode_status.transition_id >> 24) & 0xFFU);
+      BuffLength = 12U;
       break;
     }
 

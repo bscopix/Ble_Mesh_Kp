@@ -809,6 +809,11 @@
               <FilePath>../Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_gpio.c</FilePath>
             </File>
             <File>
+              <FileName>stm32wbxx_hal_iwdg.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_iwdg.c</FilePath>
+            </File>
+            <File>
               <FileName>stm32wbxx_hal_hsem.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_hsem.c</FilePath>
@@ -1465,6 +1470,11 @@
               <FileName>appli_nvm.c</FileName>
               <FileType>1</FileType>
               <FilePath>../STM32_WPAN/App/appli_nvm.c</FilePath>
+            </File>
+            <File>
+              <FileName>mode_manager.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../STM32_WPAN/App/mode_manager.c</FilePath>
             </File>
             <File>
               <FileName>appli_vendor.c</FileName>

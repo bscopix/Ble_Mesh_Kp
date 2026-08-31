@@ -23,6 +23,7 @@
 #include "mesh_cfg_usr.h"
 #include "nfc_eeprom_mngt.h"
 #include "app_debug.h"
+#include "mode_manager.h"
 
 /* Private typedef -----------------------------------------------------------*/
 typedef struct
@@ -159,6 +160,7 @@ void SVCCTL_Init( void )
 
 __WEAK void SVCCTL_SvcInit(void)
 {
+  const BootMode_t boot_mode = ModeManager_GetBootMode();
   const uint8_t provisioning_boot_requested = (uint8_t)IsProvisioningBootRequested();
   const uint8_t provisioning_success_persisted =
       (uint8_t)((GetProvisioningResult() == PROVISION_RESULT_SUCCESS) ? 1U : 0U);
@@ -213,22 +215,29 @@ __WEAK void SVCCTL_SvcInit(void)
 #ifndef DISABLE_MESH_AUTOSTART
   MESH_Init();
 #else
-  if (provisioning_boot_requested != 0U)
+  if (boot_mode == BOOT_MODE_MESH_PROVISIONING)
   {
     StartProvisioningRuntimeSession(GetProvisioningTimeoutSeconds());
     /* Consume one-shot boot request to avoid permanent Mesh autostart on next reboot. */
     ClearProvisioningBootRequest(PROVISION_RESULT_UNKNOWN);
     MESH_Init();
   }
-  else if (provisioning_success_persisted != 0U)
+  else if (boot_mode == BOOT_MODE_MESH_OPERATIONAL)
   {
     /* Node already provisioned: start Mesh at normal reboot so GATT Proxy stays reachable. */
     MESH_Init();
   }
   else
   {
-    /* Ensure legacy GATT startup is not blocked by a stale runtime session flag. */
-    StopProvisioningRuntimeSession(PROVISION_RESULT_UNKNOWN);
+    /* Only the historical unprovisioned GATT path clears a stale one-shot
+     * provisioning session. Maintenance/recovery must preserve the persisted
+     * provisioning result and all Mesh credentials. */
+    if ((boot_mode == BOOT_MODE_LEGACY_GATT) &&
+        (provisioning_success_persisted == 0U))
+    {
+      StopProvisioningRuntimeSession(PROVISION_RESULT_UNKNOWN);
+    }
+    APP_DBG_MSG("[SVCCTL] GATT-only boot mode=%u\r\n", (unsigned int)boot_mode);
   }
 #endif
 

@@ -26,6 +26,7 @@
 #include "appli_config_client.h"
 #include "appli_nvm.h"
 #include "nfc_eeprom_mngt.h"
+#include "mode_manager.h"
 #include "shci.h"
 
 
@@ -166,6 +167,17 @@ void MESH_Init(void)
     {
       TRACE_I(TF_PROVISION,"Provisioning state mismatch at mesh init: mesh=unprovisioned, persisted=success; syncing to UNKNOWN\r\n");
       ClearProvisioningBootRequest(PROVISION_RESULT_UNKNOWN);
+
+      if (ModeManager_GetBootMode() == BOOT_MODE_MESH_OPERATIONAL)
+      {
+        TRACE_I(TF_PROVISION,"Operational mode has invalid Mesh NVM: fallback to GATT recovery\r\n");
+        if (ModeManager_RequestMode(BOOT_MODE_GATT_RECOVERY, 0U))
+        {
+          ModeManager_SetLastError(MODE_ERROR_INVALID_MESH_NVM);
+          HAL_Delay(100U);
+          NVIC_SystemReset();
+        }
+      }
     }
 
     BLEMesh_InitUnprovisionedNode(); /* Initializes  Unprovisioned node */
@@ -182,6 +194,16 @@ void MESH_Init(void)
     {
       TRACE_I(TF_PROVISION,"Provisioning state mismatch at mesh init: mesh=provisioned, persisted!=success; syncing to SUCCESS\r\n");
       ClearProvisioningBootRequest(PROVISION_RESULT_SUCCESS);
+    }
+
+    if (ModeManager_GetBootMode() == BOOT_MODE_MESH_PROVISIONING)
+    {
+      TRACE_I(TF_PROVISION,"Provisioning requested for an already provisioned node: switching to operational\r\n");
+      if (ModeManager_RequestMode(BOOT_MODE_MESH_OPERATIONAL, 0U))
+      {
+        HAL_Delay(100U);
+        NVIC_SystemReset();
+      }
     }
 
     BLEMesh_InitProvisionedNode();  /* Initializes  Provisioned node */

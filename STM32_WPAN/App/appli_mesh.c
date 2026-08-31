@@ -37,6 +37,7 @@
 #include "common.h"
 #include "serial_if.h"
 #include "appli_nvm.h"
+#include "mode_manager.h"
 #include "pal_nvm.h"
 #include "appli_config_client.h"
 #include "appli_generic_client.h"
@@ -232,6 +233,7 @@ static void Appli_GetMACfromUniqueNumber(void);
 
 const void *mobleNvmBase; 
 const void *appNvmBase;
+const void *modeNvmBase;
 const void *prvsnr_data;
 #else
 #error "Unknown compiler"
@@ -474,11 +476,39 @@ static void Appli_Task()
 {
   if (ProvisioningSessionCommitPending != 0U)
   {
+    MOBLE_RESULT nvm_result = PalNvmProcess();
+
+    /* Never reset before the Mesh library has committed its serialized
+     * network image. PalNvmProcess deliberately defers while PB-GATT/Proxy is
+     * connected, hence this task is armed by the disconnect callback. */
+    if ((nvm_result != MOBLE_RESULT_SUCCESS) || (nvm_operation != 0U))
+    {
+      TRACE_I(TF_PROVISION,"Provisioning commit waiting for Mesh NVM op=%u result=%d\r\n",
+              (unsigned int)nvm_operation,
+              nvm_result);
+      UTIL_SEQ_SetTask(1UL << CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
+      return;
+    }
+
     ProvisioningSessionCommitPending = 0U;
 
     if (IsProvisioningRuntimeSessionActive())
     {
       StopProvisioningRuntimeSession(PROVISION_RESULT_SUCCESS);
+
+      /* Provisioning is complete before configuration starts. Persist the
+       * operational target outside the Mesh NVM, then reboot so the Proxy
+       * service starts from a clean CPU1/CPU2 state. */
+      if (ModeManager_RequestMode(BOOT_MODE_MESH_OPERATIONAL, 0U))
+      {
+        TRACE_I(TF_PROVISION,"Provisioning committed: reboot to Mesh operational\r\n");
+        HAL_Delay(250U);
+        NVIC_SystemReset();
+      }
+      else
+      {
+        TRACE_I(TF_PROVISION,"Provisioning committed but mode NVM write failed; keep runtime alive\r\n");
+      }
     }
   }
 
@@ -690,8 +720,8 @@ void Appli_BleGattDisconnectionCompleteCb(void)
       ProvisioningSessionCommitPending = 1U;
       TRACE_I(TF_PROVISION,"Provisioning session completed (disconnect, config_seen=%u)\r\n",
               ProvisioningConfigActivitySeen);
-      UTIL_SEQ_SetTask( 1<<CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
     }
+    UTIL_SEQ_SetTask(1UL << CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
   }
 }
 
@@ -1237,7 +1267,12 @@ void BLEMesh_ProvisionCallback(void)
   PrvngInProcess = 0;
 #endif
   TRACE_I(TF_PROVISION,"Device is provisioned by provisioner \r\n");
-  TRACE_I(TF_PROVISION,"Waiting configuration (manual power cycle required for GATT mode)\r\n");
+  if (IsProvisioningRuntimeSessionActive() &&
+      (ProvisioningSessionCommitPending == 0U))
+  {
+    ProvisioningSessionCommitPending = 1U;
+    TRACE_I(TF_PROVISION,"Provisioning complete: waiting PB-GATT disconnect for NVM commit\r\n");
+  }
   
 #if (LOW_POWER_FEATURE == 1)
   /* Call API LPN_API_TIMER_INTERVAL after LPN provisioning */
@@ -1259,8 +1294,7 @@ void BLEMesh_ConfigurationCallback(void)
     if (ProvisioningSessionCommitPending == 0U)
     {
       ProvisioningSessionCommitPending = 1U;
-      TRACE_I(TF_PROVISION,"Provisioning session completed (configured), manual power cycle required for GATT mode\r\n");
-      UTIL_SEQ_SetTask( 1<<CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
+      TRACE_I(TF_PROVISION,"Provisioning configured: waiting disconnect for NVM commit\r\n");
     }
   }
 
@@ -1714,7 +1748,16 @@ void Appli_Process(void)
       {
         ClearProvisioningBootRequest(PROVISION_RESULT_TIMEOUT);
       }
-      TRACE_I(TF_PROVISION,"Provisioning session timeout, manual power cycle required for GATT mode\r\n");
+      TRACE_I(TF_PROVISION,"Provisioning session timeout: return to legacy GATT\r\n");
+      if (ModeManager_RequestMode(BOOT_MODE_LEGACY_GATT, 0U))
+      {
+        HAL_Delay(100U);
+        NVIC_SystemReset();
+      }
+      else
+      {
+        TRACE_I(TF_PROVISION,"Provisioning timeout mode write failed; watchdog remains active\r\n");
+      }
     }
   }
 }

@@ -62,6 +62,8 @@
 #define APPLI_MODE_READ        0x24U /* no params */
 #define APPLI_SSID_SET         0x25U /* B1..Bn = SSID string (max 16 chars) */
 #define APPLI_SSID_READ        0x26U /* no params */
+#define APPLI_ENTER_GATT_MAINTENANCE 0x27U /* B1..B4 = transition_id LE */
+#define APPLI_GET_MODE_STATUS         0x28U /* no params */
 /******************************************************************************/
 
 /****************Data Received from Android/iOS. B0 = SubCommand***************/
@@ -182,5 +184,4 @@ MOBLE_RESULT VendorModel_PID1_ProcessMessageCb(MODEL_MessageHeader_t *pmsgParams
                                                    );
 
 #endif /* __VENDOR_H */
-
 

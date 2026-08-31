@@ -22,6 +22,7 @@
 #include "stm32wbxx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "dbg_trace.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -85,6 +86,7 @@ typedef struct
   uint32_t psp_xpsr;
 } FaultContext_t;
 
+__attribute__((section("FAULT_NOINIT"), used, aligned(8)))
 volatile FaultContext_t g_FaultContext;
 
 static void Fault_CopyStackFrame(uint32_t sp,
@@ -112,6 +114,31 @@ static void Fault_CopyStackFrame(uint32_t sp,
     *pc = stack[6];
     *xpsr = stack[7];
   }
+}
+
+void FaultContext_ReportAndClear(void)
+{
+  if (g_FaultContext.magic == 0xDEADFA11UL)
+  {
+    APP_DBG_MSG("[FAULT] CFSR=%08lx HFSR=%08lx BFAR=%08lx MMFAR=%08lx\r\n",
+                (unsigned long)g_FaultContext.cfsr,
+                (unsigned long)g_FaultContext.hfsr,
+                (unsigned long)g_FaultContext.bfar,
+                (unsigned long)g_FaultContext.mmfar);
+    APP_DBG_MSG("[FAULT] MSP=%08lx PC=%08lx LR=%08lx PSP=%08lx PC=%08lx LR=%08lx\r\n",
+                (unsigned long)g_FaultContext.msp,
+                (unsigned long)g_FaultContext.msp_pc,
+                (unsigned long)g_FaultContext.msp_lr,
+                (unsigned long)g_FaultContext.psp,
+                (unsigned long)g_FaultContext.psp_pc,
+                (unsigned long)g_FaultContext.psp_lr);
+    g_FaultContext.magic = 0U;
+  }
+}
+
+uint8_t FaultContext_IsPending(void)
+{
+  return (g_FaultContext.magic == 0xDEADFA11UL) ? 1U : 0U;
 }
 
 /* USER CODE END 0 */
@@ -187,6 +214,9 @@ void HardFault_Handler(void)
     __BKPT(0);
   }
 
+  __DSB();
+  NVIC_SystemReset();
+
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
@@ -202,6 +232,7 @@ void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
 
+  HardFault_Handler();
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
   {
@@ -217,6 +248,7 @@ void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
 
+  HardFault_Handler();
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
   {
@@ -232,6 +264,7 @@ void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
 
+  HardFault_Handler();
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
   {

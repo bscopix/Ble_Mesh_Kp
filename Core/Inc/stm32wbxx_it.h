@@ -61,7 +61,8 @@ void LPUART1_IRQHandler(void);
 void HSEM_IRQHandler(void);
 void DMA2_Channel4_IRQHandler(void);
 /* USER CODE BEGIN EFP */
-
+void FaultContext_ReportAndClear(void);
+uint8_t FaultContext_IsPending(void);
 /* USER CODE END EFP */
 
 #ifdef __cplusplus
