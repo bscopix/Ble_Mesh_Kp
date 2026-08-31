@@ -746,16 +746,27 @@ void Appli_BleGattDisconnectionCompleteCb(void)
     UTIL_SEQ_SetTask(1UL << CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
   }
   else if ((BLEMesh_IsUnprovisioned() == MOBLE_FALSE) &&
-           ((ProvisioningConfigActivitySeen != 0U) || (nvm_operation != 0U)))
+           (ProvisioningConfigActivitySeen != 0U))
   {
-    /* Only configuration-changing Proxy sessions are restarted.  Ordinary
-     * Proxy disconnects (vendor traffic, status reads...) remain seamless. */
+    /* BLEMesh_ConfigurationCallback(), not the generic library NVM bitmap,
+     * proves that this Proxy session changed Config Server state.  SEQ, RPL
+     * and model-state updates use the same nvm_operation bits and must not
+     * turn an ordinary vendor session into a controlled restart. */
     MeshConfigCommitPending = 1U;
     TRACE_I(TF_PROVISION,
             "Mesh configuration disconnect: commit op=%u then restart Proxy\r\n",
             (unsigned int)nvm_operation);
     UTIL_SEQ_SetTask(1UL << CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
   }
+}
+
+MOBLEBOOL AppliMesh_IsNvmCommitUrgent(void)
+{
+  return ((ProvisioningSessionCommitPending != 0U) ||
+          (MeshConfigCommitPending != 0U) ||
+          (ProvisioningConfigActivitySeen != 0U))
+             ? MOBLE_TRUE
+             : MOBLE_FALSE;
 }
 
 /**

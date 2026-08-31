@@ -110,6 +110,7 @@ void Appli_CheckForUnprovision(void);
 void Appli_Unprovision(void);
 MOBLE_RESULT Appli_MeshEraseProvisioningStorage(void);
 void Appli_Process(void);
+MOBLEBOOL AppliMesh_IsNvmCommitUrgent(void);
 void Appli_LedCtrl(void);
 void Appli_Init(MOBLEUINT8 *flag);
 

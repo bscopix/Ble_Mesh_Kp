@@ -32,12 +32,17 @@
 
 #include "mesh_cfg.h"
 #include "appli_nvm.h"
+#include "appli_mesh.h"
 #include "app_ble.h"
 
 /* Private define ------------------------------------------------------------*/
 #define PAL_NVM_FLASH_RETRY_COUNT  32U
 #define PAL_NVM_OPERATION_ERASE    0x01U
 #define PAL_NVM_OPERATION_ROTATE   0x02U
+/* Runtime Mesh state (principally RPL and the already block-reserved SEQ)
+ * shares the same serialized image as Config Server state.  Coalesce it so
+ * sustained traffic causes at most one full-page rotation per interval. */
+#define PAL_NVM_RUNTIME_BATCH_MS    (15UL * 60UL * 1000UL)
 
 /* Private variables ---------------------------------------------------------*/
 extern MOBLEUINT8 nvm_operation;
@@ -488,11 +493,28 @@ MOBLE_RESULT PalNvmProcess(void)
   MOBLEUINT32 target_address;
   APP_BLE_ConnStatus_t connection_status;
   static MOBLEUINT8 deferred_operation = 0U;
+  static MOBLEBOOL runtime_batch_active = MOBLE_FALSE;
+  static MOBLEBOOL runtime_batch_logged = MOBLE_FALSE;
+  static uint32_t runtime_batch_started = 0U;
+  uint32_t now;
+  MOBLEBOOL urgent_commit;
 
   if (operation == 0U)
   {
     deferred_operation = 0U;
+    runtime_batch_active = MOBLE_FALSE;
+    runtime_batch_logged = MOBLE_FALSE;
     return MOBLE_RESULT_SUCCESS;
+  }
+
+  now = HAL_GetTick();
+  urgent_commit = AppliMesh_IsNvmCommitUrgent();
+
+  if ((urgent_commit == MOBLE_FALSE) &&
+      (runtime_batch_active == MOBLE_FALSE))
+  {
+    runtime_batch_active = MOBLE_TRUE;
+    runtime_batch_started = now;
   }
 
   /* Config Server callbacks run while PB-GATT/Proxy traffic is active.  Wait
@@ -512,6 +534,30 @@ MOBLE_RESULT PalNvmProcess(void)
       deferred_operation = operation;
     }
     return MOBLE_RESULT_SUCCESS;
+  }
+
+  /* The ST library uses the same operation bits for Config Server, RPL, SEQ
+   * and model state.  Only the application callback can classify a Config
+   * Server transaction as urgent.  Everything else remains in RAM and the
+   * latest serialized image is committed once per batch interval. */
+  if ((urgent_commit == MOBLE_FALSE) &&
+      ((uint32_t)(now - runtime_batch_started) < PAL_NVM_RUNTIME_BATCH_MS))
+  {
+    if (runtime_batch_logged == MOBLE_FALSE)
+    {
+      TRACE_I(TF_PROVISION,
+              "NVM runtime batch pending op=%u interval_ms=%lu\r\n",
+              (unsigned int)operation,
+              (unsigned long)PAL_NVM_RUNTIME_BATCH_MS);
+      runtime_batch_logged = MOBLE_TRUE;
+    }
+    return MOBLE_RESULT_SUCCESS;
+  }
+
+  if (urgent_commit == MOBLE_FALSE)
+  {
+    TRACE_I(TF_PROVISION,"NVM runtime batch commit op=%u\r\n",
+            (unsigned int)operation);
   }
 
   deferred_operation = 0U;
@@ -587,6 +633,8 @@ MOBLE_RESULT PalNvmProcess(void)
 
     nvm_flash_page = target_page;
     nvm_operation = 0U;
+    runtime_batch_active = MOBLE_FALSE;
+    runtime_batch_logged = MOBLE_FALSE;
     TRACE_I(TF_PROVISION,
             "NVM PROCESS rotate committed active=%u op=%u\r\n",
             (unsigned int)nvm_flash_page,
@@ -604,6 +652,8 @@ MOBLE_RESULT PalNvmProcess(void)
     if (result == MOBLE_RESULT_SUCCESS)
     {
       nvm_operation = 0U;
+      runtime_batch_active = MOBLE_FALSE;
+      runtime_batch_logged = MOBLE_FALSE;
     }
     return result;
   }
