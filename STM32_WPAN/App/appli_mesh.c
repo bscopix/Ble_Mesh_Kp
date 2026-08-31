@@ -199,7 +199,7 @@ MOBLEUINT8 lowPowerNodeApiTimer_Id;
 #endif
 
 MOBLEUINT8 pPropertyId[4];
-static uint8_t ProvisioningConfigActivitySeen = 0U;
+static uint8_t ConfigServerDirty = 0U;
 static uint8_t ProvisioningTimeoutNotified = 0U;
 static uint8_t ProvisioningSessionCommitPending = 0U;
 static uint8_t MeshConfigCommitPending = 0U;
@@ -535,7 +535,7 @@ static void Appli_Task()
        * the Proxy service is rebuilt from a clean persisted configuration. */
       MeshConfigCommitPending = 0U;
       ProvisioningSessionCommitPending = 0U;
-      ProvisioningConfigActivitySeen = 0U;
+      ConfigServerDirty = 0U;
       TRACE_I(TF_PROVISION,"Mesh configuration committed: controlled Proxy restart\r\n");
       ModeManager_ScheduleReset();
       return;
@@ -749,17 +749,17 @@ void Appli_BleGattDisconnectionCompleteCb(void)
     {
       ProvisioningSessionCommitPending = 1U;
       TRACE_I(TF_PROVISION,"Provisioning session completed (disconnect, config_seen=%u)\r\n",
-              ProvisioningConfigActivitySeen);
+              ConfigServerDirty);
     }
     UTIL_SEQ_SetTask(1UL << CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
   }
   else if ((BLEMesh_IsUnprovisioned() == MOBLE_FALSE) &&
-           (ProvisioningConfigActivitySeen != 0U))
+           (ConfigServerDirty != 0U))
   {
-    /* BLEMesh_ConfigurationCallback(), not the generic library NVM bitmap,
-     * proves that this Proxy session changed Config Server state.  SEQ, RPL
-     * and model-state updates use the same nvm_operation bits and must not
-     * turn an ordinary vendor session into a controlled restart. */
+    /* Only a successful mutating Config Server callback proves that this
+     * Proxy session changed persistent configuration.  SEQ, RPL, reads and
+     * vendor model state use the same library NVM bits and stay on the
+     * batched runtime journal path without restarting the node. */
     MeshConfigCommitPending = 1U;
     TRACE_I(TF_PROVISION,
             "Mesh configuration disconnect: commit op=%u then restart Proxy\r\n",
@@ -772,7 +772,7 @@ MOBLEBOOL AppliMesh_IsNvmCommitUrgent(void)
 {
   return ((ProvisioningSessionCommitPending != 0U) ||
           (MeshConfigCommitPending != 0U) ||
-          (ProvisioningConfigActivitySeen != 0U))
+          (ConfigServerDirty != 0U))
              ? MOBLE_TRUE
              : MOBLE_FALSE;
 }
@@ -1313,7 +1313,7 @@ void BLEMesh_PbAdvLinkCloseCb(void)
 void BLEMesh_ProvisionCallback(void)
 {
   ProvisionFlag = 1;
-  ProvisioningConfigActivitySeen = 0U;
+  ConfigServerDirty = 0U;
   ProvisioningTimeoutNotified = 0U;
 #ifdef ENABLE_AUTH_TYPE_OUTPUT_OOB
   PrvngInProcess = 0;
@@ -1340,7 +1340,9 @@ void BLEMesh_ProvisionCallback(void)
 */
 void BLEMesh_ConfigurationCallback(void)
 {
-  ProvisioningConfigActivitySeen = 1U;
+  /* ST also invokes this generic callback for vendor traffic.  It is useful
+   * for provisioning progress only and must never classify an NVM operation
+   * as a Config Server mutation. */
   if (IsProvisioningRuntimeSessionActive())
   {
     if (ProvisioningSessionCommitPending == 0U)
@@ -1362,11 +1364,15 @@ void BLEMesh_ConfigurationCallback(void)
 #endif
 }
 
-void Appli_NotifyProvisioningConfigActivity(void)
+void Appli_NotifyConfigServerMutation(void)
 {
-  if (IsProvisioningRuntimeSessionActive() && (BLEMesh_IsUnprovisioned() == MOBLE_FALSE))
+  if (BLEMesh_IsUnprovisioned() == MOBLE_FALSE)
   {
-    ProvisioningConfigActivitySeen = 1U;
+    if (ConfigServerDirty == 0U)
+    {
+      TRACE_I(TF_PROVISION,"Config Server mutation accepted: full commit required\r\n");
+    }
+    ConfigServerDirty = 1U;
   }
 }
 
