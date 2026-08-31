@@ -39,10 +39,9 @@
 #define PAL_NVM_FLASH_RETRY_COUNT  32U
 #define PAL_NVM_OPERATION_ERASE    0x01U
 #define PAL_NVM_OPERATION_ROTATE   0x02U
-/* Runtime Mesh state (principally RPL and the already block-reserved SEQ)
- * shares the same serialized image as Config Server state.  Coalesce it so
- * sustained traffic causes at most one full-page rotation per interval. */
-#define PAL_NVM_RUNTIME_BATCH_MS    (15UL * 60UL * 1000UL)
+/* Runtime Mesh state (principally RPL and the block-reserved SEQ) shares the
+ * serialized image with Config Server state. Persist its small deltas in an
+ * append-only page; a SEQ block reservation must be durable before reset. */
 #define PAL_RUNTIME_DATA_MAGIC      0x4A524E31UL
 #define PAL_RUNTIME_TX_MAGIC        0x4A545831UL
 #define PAL_RUNTIME_JOURNAL_COMMIT  0x434D5431UL
@@ -292,6 +291,10 @@ static MOBLE_RESULT PalRuntimeJournalAppend(MOBLEUINT32 active_address,
 
   if (changed_count == 0U)
   {
+    TRACE_I(TF_PROVISION,
+            "NVM runtime journal unchanged base=0x%08lx size=%lu\r\n",
+            (unsigned long)active_address,
+            (unsigned long)image_size);
     return MOBLE_RESULT_SUCCESS;
   }
 
@@ -317,6 +320,14 @@ static MOBLE_RESULT PalRuntimeJournalAppend(MOBLEUINT32 active_address,
       break;
     }
   }
+
+  TRACE_I(TF_PROVISION,
+          "NVM runtime journal plan base=0x%08lx size=%lu changed=%lu free=%lu first=%lu\r\n",
+          (unsigned long)active_address,
+          (unsigned long)image_size,
+          (unsigned long)changed_count,
+          (unsigned long)free_count,
+          (unsigned long)first_free);
 
   if ((first_free == record_count) || (free_count < (changed_count + 1U)))
   {
@@ -912,73 +923,23 @@ MOBLE_RESULT PalNvmProcess(void)
   MOBLEUINT32 target_address;
   APP_BLE_ConnStatus_t connection_status;
   static MOBLEUINT8 deferred_operation = 0U;
-  static MOBLEBOOL runtime_batch_active = MOBLE_FALSE;
-  static MOBLEBOOL runtime_batch_logged = MOBLE_FALSE;
-  static uint32_t runtime_batch_started = 0U;
-  uint32_t now;
+  static MOBLEBOOL runtime_compaction_pending = MOBLE_FALSE;
   MOBLEBOOL urgent_commit;
   MOBLEBOOL runtime_compaction = MOBLE_FALSE;
+  MOBLEBOOL connected;
 
   if (operation == 0U)
   {
     deferred_operation = 0U;
-    runtime_batch_active = MOBLE_FALSE;
-    runtime_batch_logged = MOBLE_FALSE;
+    runtime_compaction_pending = MOBLE_FALSE;
     return MOBLE_RESULT_SUCCESS;
   }
 
-  now = HAL_GetTick();
   urgent_commit = AppliMesh_IsNvmCommitUrgent();
-
-  if ((urgent_commit == MOBLE_FALSE) &&
-      (runtime_batch_active == MOBLE_FALSE))
-  {
-    runtime_batch_active = MOBLE_TRUE;
-    runtime_batch_started = now;
-  }
-
-  /* Config Server callbacks run while PB-GATT/Proxy traffic is active.  Wait
-   * for disconnection so the serialized RAM image is stable and all commands
-   * of one configuration session are committed in a single flash rotation. */
   connection_status = APP_BLE_Get_Server_Connection_Status();
-  if ((connection_status == APP_BLE_CONNECTED_SERVER) ||
-      (connection_status == APP_BLE_CONNECTED_CLIENT))
-  {
-    if (deferred_operation != operation)
-    {
-      TRACE_I(TF_PROVISION,
-              "NVM PROCESS deferred op=%u page=%u connection=%u\r\n",
-              (unsigned int)operation,
-              (unsigned int)nvm_flash_page,
-              (unsigned int)connection_status);
-      deferred_operation = operation;
-    }
-    return MOBLE_RESULT_SUCCESS;
-  }
-
-  /* The ST library uses the same operation bits for Config Server, RPL, SEQ
-   * and model state.  Only the application callback can classify a Config
-   * Server transaction as urgent.  Everything else remains in RAM and the
-   * latest serialized image is committed once per batch interval. */
-  if ((urgent_commit == MOBLE_FALSE) &&
-      ((uint32_t)(now - runtime_batch_started) < PAL_NVM_RUNTIME_BATCH_MS))
-  {
-    if (runtime_batch_logged == MOBLE_FALSE)
-    {
-      TRACE_I(TF_PROVISION,
-              "NVM runtime batch pending op=%u interval_ms=%lu\r\n",
-              (unsigned int)operation,
-              (unsigned long)PAL_NVM_RUNTIME_BATCH_MS);
-      runtime_batch_logged = MOBLE_TRUE;
-    }
-    return MOBLE_RESULT_SUCCESS;
-  }
-
-  if (urgent_commit == MOBLE_FALSE)
-  {
-    TRACE_I(TF_PROVISION,"NVM runtime batch commit op=%u\r\n",
-            (unsigned int)operation);
-  }
+  connected = ((connection_status == APP_BLE_CONNECTED_SERVER) ||
+               (connection_status == APP_BLE_CONNECTED_CLIENT))
+                  ? MOBLE_TRUE : MOBLE_FALSE;
 
   deferred_operation = 0U;
   active_page = (MOBLEUINT8)(nvm_flash_page & 0x01U);
@@ -1004,26 +965,52 @@ MOBLE_RESULT PalNvmProcess(void)
 
     if (urgent_commit == MOBLE_FALSE)
     {
-      result = PalRuntimeJournalAppend(active_address, network_conf,
-                                       network_conf_size);
-      if (result == MOBLE_RESULT_SUCCESS)
+      /* Do not batch an opaque runtime save: it may be the upper bound of a
+       * newly reserved SEQ block. The append is small and must survive an
+       * immediate reset, even while Proxy is connected. */
+      if (runtime_compaction_pending == MOBLE_FALSE)
       {
-        nvm_operation = 0U;
-        runtime_batch_active = MOBLE_FALSE;
-        runtime_batch_logged = MOBLE_FALSE;
-        return MOBLE_RESULT_SUCCESS;
-      }
-      if (result != MOBLE_RESULT_OUTOFMEMORY)
-      {
-        TRACE_I(TF_PROVISION,
-                "NVM runtime journal append failed result=%d\r\n", result);
-        return result;
+        TRACE_I(TF_PROVISION,"NVM runtime journal commit op=%u connection=%u\r\n",
+                (unsigned int)operation,
+                (unsigned int)connection_status);
+        result = PalRuntimeJournalAppend(active_address, network_conf,
+                                         network_conf_size);
+        if (result == MOBLE_RESULT_SUCCESS)
+        {
+          nvm_operation = 0U;
+          return MOBLE_RESULT_SUCCESS;
+        }
+        if (result != MOBLE_RESULT_OUTOFMEMORY)
+        {
+          TRACE_I(TF_PROVISION,
+                  "NVM runtime journal append failed result=%d\r\n", result);
+          return result;
+        }
+
+        runtime_compaction_pending = MOBLE_TRUE;
+        TRACE_I(TF_PROVISION,"NVM runtime journal full: compacting image\r\n");
       }
 
       /* The append page is full. Atomically consolidate the effective RAM
        * image into the normal double-page store, then reclaim the journal. */
       runtime_compaction = MOBLE_TRUE;
-      TRACE_I(TF_PROVISION,"NVM runtime journal full: compacting image\r\n");
+    }
+
+    /* Full-image Config Server commits and runtime compaction remain deferred
+     * until Proxy disconnects; only the bounded journal append is permitted
+     * during live traffic. */
+    if (connected != MOBLE_FALSE)
+    {
+      if (deferred_operation != operation)
+      {
+        TRACE_I(TF_PROVISION,
+                "NVM PROCESS rotation deferred op=%u page=%u connection=%u\r\n",
+                (unsigned int)operation,
+                (unsigned int)nvm_flash_page,
+                (unsigned int)connection_status);
+        deferred_operation = operation;
+      }
+      return MOBLE_RESULT_SUCCESS;
     }
 
     TRACE_I(TF_PROVISION,
@@ -1077,8 +1064,7 @@ MOBLE_RESULT PalNvmProcess(void)
 
     nvm_flash_page = target_page;
     nvm_operation = 0U;
-    runtime_batch_active = MOBLE_FALSE;
-    runtime_batch_logged = MOBLE_FALSE;
+    runtime_compaction_pending = MOBLE_FALSE;
     if ((urgent_commit != MOBLE_FALSE) ||
         (runtime_compaction != MOBLE_FALSE))
     {
@@ -1095,6 +1081,10 @@ MOBLE_RESULT PalNvmProcess(void)
 
   if ((operation & PAL_NVM_OPERATION_ERASE) != 0U)
   {
+    if (connected != MOBLE_FALSE)
+    {
+      return MOBLE_RESULT_SUCCESS;
+    }
     TRACE_I(TF_PROVISION,
             "NVM PROCESS erase active=%u op=%u\r\n",
             (unsigned int)active_page,
@@ -1103,8 +1093,6 @@ MOBLE_RESULT PalNvmProcess(void)
     if (result == MOBLE_RESULT_SUCCESS)
     {
       nvm_operation = 0U;
-      runtime_batch_active = MOBLE_FALSE;
-      runtime_batch_logged = MOBLE_FALSE;
     }
     return result;
   }

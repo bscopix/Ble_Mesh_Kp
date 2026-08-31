@@ -499,7 +499,7 @@ static void Appli_Task()
     MOBLE_RESULT nvm_result = PalNvmProcess();
 
     /* Runtime SEQ/RPL/model-state operations must enter PalNvmProcess too:
-     * this is where the 15 minute batch deadline is maintained and flushed.
+     * this is where the append-only journal is committed immediately.
      * Config/provisioning commits additionally keep this task armed until the
      * complete image is durable, before any controlled reset. */
     if ((nvm_result != MOBLE_RESULT_SUCCESS) || (nvm_operation != 0U))
@@ -513,8 +513,8 @@ static void Appli_Task()
         return;
       }
 
-      /* A runtime batch may remain pending for 15 minutes. Keep normal model
-       * processing alive while ensuring this task checks the deadline again. */
+      /* Runtime compaction may wait for a Proxy disconnect. Keep normal model
+       * processing alive while ensuring this task retries the operation. */
       UTIL_SEQ_SetTask(1UL << CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
     }
     else if ((controlled_commit_pending != 0U) &&
@@ -772,7 +772,7 @@ void Appli_BleGattDisconnectionCompleteCb(void)
     /* Only a successful mutating Config Server callback proves that this
      * Proxy session changed persistent configuration.  SEQ, RPL, reads and
      * vendor model state use the same library NVM bits and stay on the
-     * batched runtime journal path without restarting the node. */
+     * append-only runtime journal path without restarting the node. */
     MeshConfigCommitPending = 1U;
     TRACE_I(TF_PROVISION,
             "Mesh configuration disconnect: commit op=%u then restart Proxy\r\n",
