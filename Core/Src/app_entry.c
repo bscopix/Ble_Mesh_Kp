@@ -49,6 +49,7 @@ extern RTC_HandleTypeDef hrtc;
 extern const void *mobleNvmBase;
 extern const void *appNvmBase;
 extern const void *modeNvmBase;
+extern const void *runtimeNvmBase;
 extern const void *prvsnr_data;
 
 /* USER CODE BEGIN PTD */
@@ -154,16 +155,19 @@ void MX_APPE_Init(void)
   const uint32_t app_nvm_size = 2048U;
   const uint32_t prvn_nvm_page_size = 2048U;
   const uint32_t mode_nvm_size = 4096U;
+  const uint32_t runtime_nvm_size = 2048U;
 #elif defined(STM32WB55xx) || defined(STM32WB5Mxx)
   uint32_t last_user_flash_address = ((READ_BIT(FLASH->SFR, FLASH_SFR_SFSA) >> FLASH_SFR_SFSA_Pos) << 12) + FLASH_BASE;
   const uint32_t app_nvm_size = 4096U;
   const uint32_t prvn_nvm_page_size = 4096U;
   const uint32_t mode_nvm_size = 8192U;
+  const uint32_t runtime_nvm_size = 4096U;
 #else
   uint32_t last_user_flash_address = FLASH_BASE + FLASH_SIZE;
   const uint32_t app_nvm_size = 4096U;
   const uint32_t prvn_nvm_page_size = 4096U;
   const uint32_t mode_nvm_size = 8192U;
+  const uint32_t runtime_nvm_size = 4096U;
 #endif
 
   System_Init();       /**< System initialization */
@@ -190,12 +194,17 @@ void MX_APPE_Init(void)
    * Existing Mesh/application/provisioner NVM addresses remain unchanged. */
   modeNvmBase  = (const void *)(last_user_flash_address - NVM_SIZE - app_nvm_size
                                 - prvn_nvm_page_size - mode_nvm_size);
+  /* Append-only Mesh runtime journal.  It stores small opaque deltas for
+   * RPL/SEQ/model state and is deliberately separate from the two-page Mesh
+   * configuration image and the mode-transition journal. */
+  runtimeNvmBase = (const void *)((uint32_t)modeNvmBase - runtime_nvm_size);
 
-  TRACE_I(TF_INIT,"NVM bases: mesh=0x%08lx app=0x%08lx prv=0x%08lx mode=0x%08lx\r\n",
+  TRACE_I(TF_INIT,"NVM bases: mesh=0x%08lx app=0x%08lx prv=0x%08lx mode=0x%08lx runtime=0x%08lx\r\n",
           (unsigned long)mobleNvmBase,
           (unsigned long)appNvmBase,
           (unsigned long)prvsnr_data,
-          (unsigned long)modeNvmBase);
+          (unsigned long)modeNvmBase,
+          (unsigned long)runtimeNvmBase);
 /* USER CODE END APPE_Init_1 */
   appe_Tl_Init();	/* Initialize all transport layers */
 

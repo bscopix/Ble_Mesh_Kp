@@ -43,6 +43,29 @@ means legacy firmware and keeps the existing manual power-cycle workflow.
 4. Scan for Mesh Proxy (`0x1828`), connect, and actively verify the node before
    configuration. Disappearance of the old advertisement is only a hint.
 5. Configure AppKey, bindings, subscriptions, and publications as today.
+6. On the Proxy disconnect, the firmware commits the configuration image and
+   performs one controlled reset. The client waits for a valid `0x1828`
+   advertisement before continuing.
+
+## Mesh runtime persistence
+
+Configuration and high-frequency runtime state do not use the same write
+path:
+
+- Config Server changes rotate and verify the complete 3660-byte Mesh image.
+- Runtime RPL/SEQ/model changes are coalesced in RAM and appended every 15
+  minutes as 8-byte deltas in the dedicated page below the mode journal.
+- Each delta group has per-record CRCs and a final transaction footer. A torn
+  group is ignored completely after reboot.
+- `PalNvmRead()` overlays committed deltas on the selected base image before
+  the ST library sees it.
+- When the delta page is full, the effective image is atomically consolidated
+  through the existing double-page rotation, then the delta page is erased.
+- Factory unprovisioning erases both the Mesh image and its runtime journal.
+
+Vendor commands never request a controlled reset. The ST library already
+reserves outgoing sequence numbers in blocks; the journal primarily prevents
+RPL persistence from rotating the complete image for every received message.
 
 ## Mesh to GATT maintenance
 

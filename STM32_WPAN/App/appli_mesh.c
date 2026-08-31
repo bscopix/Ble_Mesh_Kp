@@ -207,6 +207,13 @@ static uint8_t MeshConfigCommitPending = 0U;
 static MOBLE_RESULT Appli_EraseProvisioningStorage(void)
 {
   MOBLE_RESULT erase_res = PalNvmErase(PRVN_NVM_BASE_OFFSET, 4U);
+  MOBLE_RESULT journal_res = PalNvmRuntimeJournalErase();
+
+  if ((erase_res == MOBLE_RESULT_SUCCESS) &&
+      (journal_res != MOBLE_RESULT_SUCCESS))
+  {
+    erase_res = journal_res;
+  }
 
   if (erase_res == MOBLE_RESULT_SUCCESS)
   {
@@ -236,6 +243,7 @@ static void Appli_GetMACfromUniqueNumber(void);
 const void *mobleNvmBase; 
 const void *appNvmBase;
 const void *modeNvmBase;
+const void *runtimeNvmBase;
 const void *prvsnr_data;
 #else
 #error "Unknown compiler"

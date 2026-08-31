@@ -43,6 +43,26 @@
  * shares the same serialized image as Config Server state.  Coalesce it so
  * sustained traffic causes at most one full-page rotation per interval. */
 #define PAL_NVM_RUNTIME_BATCH_MS    (15UL * 60UL * 1000UL)
+#define PAL_RUNTIME_DATA_MAGIC      0x4A524E31UL
+#define PAL_RUNTIME_TX_MAGIC        0x4A545831UL
+#define PAL_RUNTIME_JOURNAL_COMMIT  0x434D5431UL
+#define PAL_RUNTIME_RECORD_SIZE     32U
+#define PAL_RUNTIME_DELTA_SIZE      8U
+
+typedef struct
+{
+  uint32_t magic;
+  uint16_t offset;
+  uint16_t length;
+  uint32_t base_crc;
+  uint32_t reserved;
+  uint64_t data;
+  uint32_t record_crc;
+  uint32_t commit;
+} __attribute__((packed, aligned(8))) PalRuntimeRecord_t;
+
+typedef char PalRuntimeRecordSizeMustBe32[
+    (sizeof(PalRuntimeRecord_t) == PAL_RUNTIME_RECORD_SIZE) ? 1 : -1];
 
 /* Private variables ---------------------------------------------------------*/
 extern MOBLEUINT8 nvm_operation;
@@ -51,8 +71,315 @@ extern MOBLEUINT8 nvm_flash_page;
  * MoblePalBluetoothNvmSave() is deferred by an active Scan/Proxy session. */
 extern void const *network_conf;
 extern MOBLEUINT16 network_conf_size;
+static uint8_t runtime_effective_image[FLASH_PAGE_SIZE] __attribute__((aligned(8)));
 
 /* Private functions ---------------------------------------------------------*/
+static uint32_t PalNvmCrc32(void const *data, uint32_t length)
+{
+  uint8_t const *bytes = (uint8_t const *)data;
+  uint32_t crc = 0xFFFFFFFFUL;
+  uint32_t i;
+  uint32_t bit;
+
+  for (i = 0U; i < length; i++)
+  {
+    crc ^= bytes[i];
+    for (bit = 0U; bit < 8U; bit++)
+    {
+      crc = (crc >> 1) ^ ((crc & 1U) ? 0xEDB88320UL : 0U);
+    }
+  }
+  return ~crc;
+}
+
+static MOBLEBOOL PalRuntimeRecordIsErased(PalRuntimeRecord_t const *record)
+{
+  uint32_t const *words = (uint32_t const *)record;
+  uint32_t i;
+
+  for (i = 0U; i < (sizeof(*record) / sizeof(uint32_t)); i++)
+  {
+    if (words[i] != 0xFFFFFFFFUL)
+    {
+      return MOBLE_FALSE;
+    }
+  }
+  return MOBLE_TRUE;
+}
+
+static MOBLEBOOL PalRuntimeRecordIsValid(PalRuntimeRecord_t const *record)
+{
+  MOBLEBOOL shape_valid = MOBLE_FALSE;
+
+  if ((record->magic == PAL_RUNTIME_DATA_MAGIC) &&
+      (record->length == PAL_RUNTIME_DELTA_SIZE) &&
+      ((record->offset & (PAL_RUNTIME_DELTA_SIZE - 1U)) == 0U) &&
+      (((uint32_t)record->offset + record->length) <= FLASH_PAGE_SIZE))
+  {
+    shape_valid = MOBLE_TRUE;
+  }
+  else if ((record->magic == PAL_RUNTIME_TX_MAGIC) &&
+           (record->length == 0U))
+  {
+    shape_valid = MOBLE_TRUE;
+  }
+
+  return ((shape_valid != MOBLE_FALSE) &&
+          (record->commit == PAL_RUNTIME_JOURNAL_COMMIT) &&
+          (record->record_crc == PalNvmCrc32(record, 24U)))
+             ? MOBLE_TRUE
+             : MOBLE_FALSE;
+}
+
+static MOBLEBOOL PalRuntimeTransactionIsCommitted(
+    PalRuntimeRecord_t const *records,
+    uint32_t record_count,
+    uint32_t data_index,
+    uint32_t base_crc,
+    uint32_t transaction_id)
+{
+  uint32_t i;
+
+  for (i = data_index + 1U; i < record_count; i++)
+  {
+    if ((PalRuntimeRecordIsValid(&records[i]) != MOBLE_FALSE) &&
+        (records[i].magic == PAL_RUNTIME_TX_MAGIC) &&
+        (records[i].base_crc == base_crc) &&
+        (records[i].reserved == transaction_id))
+    {
+      return MOBLE_TRUE;
+    }
+  }
+  return MOBLE_FALSE;
+}
+
+static MOBLE_RESULT PalRuntimeWriteRecord(uint32_t index,
+                                          PalRuntimeRecord_t *record)
+{
+  uint64_t final_doubleword;
+  MOBLEUINT32 destination = (MOBLEUINT32)runtimeNvmBase +
+                            (index * sizeof(PalRuntimeRecord_t));
+
+  record->record_crc = PalNvmCrc32(record, 24U);
+  record->commit = PAL_RUNTIME_JOURNAL_COMMIT;
+  if (FD_WriteData(destination, (uint64_t *)record, 3U) != 0U)
+  {
+    return MOBLE_RESULT_FAIL;
+  }
+  memcpy(&final_doubleword, &record->record_crc, sizeof(final_doubleword));
+  if (FD_WriteData(destination + 24U, &final_doubleword, 1U) != 0U)
+  {
+    return MOBLE_RESULT_FAIL;
+  }
+  return (memcmp((void const *)destination, record, sizeof(*record)) == 0)
+             ? MOBLE_RESULT_SUCCESS
+             : MOBLE_RESULT_FAIL;
+}
+
+static MOBLEBOOL PalRuntimeAddressIsMeshPage(MOBLEUINT32 address,
+                                             MOBLEUINT32 size,
+                                             MOBLEUINT32 *page_address)
+{
+  MOBLEUINT32 mesh_start = (MOBLEUINT32)NVM_BASE;
+  MOBLEUINT32 mesh_end = mesh_start + (MOBLEUINT32)NVM_SIZE;
+  MOBLEUINT32 candidate;
+
+  if ((address < mesh_start) || ((uint64_t)address + size > mesh_end))
+  {
+    return MOBLE_FALSE;
+  }
+
+  candidate = mesh_start +
+              (((address - mesh_start) / FLASH_PAGE_SIZE) * FLASH_PAGE_SIZE);
+  if (((uint64_t)address + size) >
+      ((uint64_t)candidate + FLASH_PAGE_SIZE))
+  {
+    return MOBLE_FALSE;
+  }
+
+  *page_address = candidate;
+  return MOBLE_TRUE;
+}
+
+static void PalRuntimeOverlay(MOBLEUINT32 address, void *buf, MOBLEUINT32 size)
+{
+  PalRuntimeRecord_t const *records =
+      (PalRuntimeRecord_t const *)runtimeNvmBase;
+  MOBLEUINT32 page_address;
+  uint32_t base_crc;
+  uint32_t record_count = FLASH_PAGE_SIZE / sizeof(PalRuntimeRecord_t);
+  uint32_t i;
+
+  if ((runtimeNvmBase == NULL) ||
+      (PalRuntimeAddressIsMeshPage(address, size, &page_address) == MOBLE_FALSE))
+  {
+    return;
+  }
+
+  base_crc = PalNvmCrc32((void const *)page_address, FLASH_PAGE_SIZE);
+  for (i = 0U; i < record_count; i++)
+  {
+    uint32_t record_start;
+    uint32_t record_end;
+    uint32_t read_start = address - page_address;
+    uint32_t read_end = read_start + size;
+
+    if ((PalRuntimeRecordIsValid(&records[i]) == MOBLE_FALSE) ||
+        (records[i].magic != PAL_RUNTIME_DATA_MAGIC) ||
+        (records[i].base_crc != base_crc) ||
+        (PalRuntimeTransactionIsCommitted(records, record_count, i,
+                                          base_crc,
+                                          records[i].reserved) == MOBLE_FALSE))
+    {
+      continue;
+    }
+
+    record_start = records[i].offset;
+    record_end = record_start + records[i].length;
+    if ((record_start < read_end) && (record_end > read_start))
+    {
+      uint32_t copy_start = (record_start > read_start) ? record_start : read_start;
+      uint32_t copy_end = (record_end < read_end) ? record_end : read_end;
+      memcpy((uint8_t *)buf + (copy_start - read_start),
+             (uint8_t const *)&records[i].data + (copy_start - record_start),
+             copy_end - copy_start);
+    }
+  }
+}
+
+static MOBLE_RESULT PalRuntimeReadEffective(MOBLEUINT32 address,
+                                            void *buf,
+                                            MOBLEUINT32 size)
+{
+  memcpy(buf, (void const *)address, size);
+  PalRuntimeOverlay(address, buf, size);
+  return MOBLE_RESULT_SUCCESS;
+}
+
+static MOBLE_RESULT PalRuntimeJournalAppend(MOBLEUINT32 active_address,
+                                             void const *image,
+                                             MOBLEUINT32 image_size)
+{
+  PalRuntimeRecord_t const *flash_records =
+      (PalRuntimeRecord_t const *)runtimeNvmBase;
+  PalRuntimeRecord_t record;
+  uint32_t record_count = FLASH_PAGE_SIZE / sizeof(PalRuntimeRecord_t);
+  uint32_t free_count = 0U;
+  uint32_t changed_count = 0U;
+  uint32_t first_free = record_count;
+  uint32_t rounded_size = (image_size + 7U) & ~7U;
+  uint32_t base_crc;
+  uint32_t transaction_id = 1U;
+  uint32_t offset;
+  uint32_t i;
+
+  if ((runtimeNvmBase == NULL) || (image == NULL) ||
+      (rounded_size > FLASH_PAGE_SIZE))
+  {
+    return MOBLE_RESULT_INVALIDARG;
+  }
+
+  PalRuntimeReadEffective(active_address, runtime_effective_image, rounded_size);
+  for (offset = 0U; offset < rounded_size; offset += PAL_RUNTIME_DELTA_SIZE)
+  {
+    if (memcmp(&runtime_effective_image[offset],
+               (uint8_t const *)image + offset,
+               PAL_RUNTIME_DELTA_SIZE) != 0)
+    {
+      changed_count++;
+    }
+  }
+
+  if (changed_count == 0U)
+  {
+    return MOBLE_RESULT_SUCCESS;
+  }
+
+  for (i = 0U; i < record_count; i++)
+  {
+    if (PalRuntimeRecordIsErased(&flash_records[i]) != MOBLE_FALSE)
+    {
+      if (first_free == record_count)
+      {
+        first_free = i;
+      }
+      free_count++;
+    }
+  }
+
+  /* Append order must remain monotonic. A torn record consumes its slot, so
+   * only the erased suffix following the first free slot is usable. */
+  for (i = first_free; i < record_count; i++)
+  {
+    if (PalRuntimeRecordIsErased(&flash_records[i]) == MOBLE_FALSE)
+    {
+      free_count = i - first_free;
+      break;
+    }
+  }
+
+  if ((first_free == record_count) || (free_count < (changed_count + 1U)))
+  {
+    return MOBLE_RESULT_OUTOFMEMORY;
+  }
+
+  base_crc = PalNvmCrc32((void const *)active_address, FLASH_PAGE_SIZE);
+  for (offset = 0U; offset < first_free; offset++)
+  {
+    if ((PalRuntimeRecordIsValid(&flash_records[offset]) != MOBLE_FALSE) &&
+        (flash_records[offset].base_crc == base_crc) &&
+        (flash_records[offset].reserved >= transaction_id))
+    {
+      transaction_id = flash_records[offset].reserved + 1U;
+    }
+  }
+  i = first_free;
+  for (offset = 0U; offset < rounded_size; offset += PAL_RUNTIME_DELTA_SIZE)
+  {
+    if (memcmp(&runtime_effective_image[offset],
+               (uint8_t const *)image + offset,
+               PAL_RUNTIME_DELTA_SIZE) == 0)
+    {
+      continue;
+    }
+
+    memset(&record, 0, sizeof(record));
+    record.magic = PAL_RUNTIME_DATA_MAGIC;
+    record.offset = (uint16_t)offset;
+    record.length = PAL_RUNTIME_DELTA_SIZE;
+    record.base_crc = base_crc;
+    record.reserved = transaction_id;
+    memcpy(&record.data, (uint8_t const *)image + offset,
+           PAL_RUNTIME_DELTA_SIZE);
+    if (PalRuntimeWriteRecord(i, &record) != MOBLE_RESULT_SUCCESS)
+    {
+      return MOBLE_RESULT_FAIL;
+    }
+    i++;
+  }
+
+  /* Commit the complete group last. A reset before this footer leaves valid
+   * data records in Flash, but PalRuntimeOverlay deliberately ignores them. */
+  memset(&record, 0, sizeof(record));
+  record.magic = PAL_RUNTIME_TX_MAGIC;
+  record.offset = (uint16_t)changed_count;
+  record.length = 0U;
+  record.base_crc = base_crc;
+  record.reserved = transaction_id;
+  if (PalRuntimeWriteRecord(i, &record) != MOBLE_RESULT_SUCCESS)
+  {
+    return MOBLE_RESULT_FAIL;
+  }
+  i++;
+
+  TRACE_I(TF_PROVISION,
+          "NVM runtime journal appended records=%lu used=%lu/%lu\r\n",
+          (unsigned long)changed_count,
+          (unsigned long)i,
+          (unsigned long)record_count);
+  return MOBLE_RESULT_SUCCESS;
+}
+
 static MOBLEUINT32 PalNvmManagedStartAddress(void)
 {
   MOBLEUINT32 managed_start = (MOBLEUINT32)NVM_BASE;
@@ -167,7 +494,7 @@ MOBLE_RESULT PalNvmRead(MOBLEUINT32 address,
   result = PalNvmValidateRange(address, size);
   if (result == MOBLE_RESULT_SUCCESS)
   {
-    memcpy(buf, (void *)(address), size);
+    result = PalRuntimeReadEffective(address, buf, size);
   }
   else
   {
@@ -221,7 +548,14 @@ MOBLE_RESULT PalNvmCompare(MOBLEUINT32 address,
   {
     MOBLEUINT32 word_count = size >> 2;
     MOBLEUINT32 const *src = (MOBLEUINT32 const *)buf;
-    MOBLEUINT32 const *dst = (MOBLEUINT32 const *)address;
+    MOBLEUINT32 const *dst;
+
+    if (size > sizeof(runtime_effective_image))
+    {
+      return MOBLE_RESULT_INVALIDARG;
+    }
+    PalRuntimeReadEffective(address, runtime_effective_image, size);
+    dst = (MOBLEUINT32 const *)runtime_effective_image;
 
     *comparison = MOBLE_NVM_COMPARE_EQUAL;
 
@@ -328,6 +662,40 @@ MOBLE_RESULT PalNvmErase(MOBLEUINT32 address,
 
   TRACE_I(TF_PROVISION,"NVM ERASE ok addr=0x%08lx pages=%u\r\n",
           (unsigned long)address, nb_pages);
+  return MOBLE_RESULT_SUCCESS;
+}
+
+MOBLE_RESULT PalNvmRuntimeJournalErase(void)
+{
+  MOBLEUINT32 first_page;
+  MOBLEUINT32 remaining = 1U;
+  MOBLEUINT32 retry_count = 0U;
+
+  if (runtimeNvmBase == NULL)
+  {
+    return MOBLE_RESULT_INVALIDARG;
+  }
+
+  if (PalNvmPageIsErased((MOBLEUINT32)runtimeNvmBase) != MOBLE_FALSE)
+  {
+    return MOBLE_RESULT_SUCCESS;
+  }
+
+  first_page = GetPage((MOBLEUINT32)runtimeNvmBase);
+  while ((remaining != 0U) && (retry_count < PAL_NVM_FLASH_RETRY_COUNT))
+  {
+    remaining = FD_EraseSectors(first_page, 1U);
+    retry_count++;
+  }
+
+  if (remaining != 0U)
+  {
+    TRACE_I(TF_PROVISION,"NVM runtime journal erase failed addr=0x%08lx\r\n",
+            (unsigned long)runtimeNvmBase);
+    return MOBLE_RESULT_FAIL;
+  }
+
+  TRACE_I(TF_PROVISION,"NVM runtime journal erased\r\n");
   return MOBLE_RESULT_SUCCESS;
 }
 
@@ -498,6 +866,7 @@ MOBLE_RESULT PalNvmProcess(void)
   static uint32_t runtime_batch_started = 0U;
   uint32_t now;
   MOBLEBOOL urgent_commit;
+  MOBLEBOOL runtime_compaction = MOBLE_FALSE;
 
   if (operation == 0U)
   {
@@ -582,6 +951,30 @@ MOBLE_RESULT PalNvmProcess(void)
     target_address = (MOBLEUINT32)NVM_BASE +
                      ((MOBLEUINT32)target_page * FLASH_PAGE_SIZE);
 
+    if (urgent_commit == MOBLE_FALSE)
+    {
+      result = PalRuntimeJournalAppend(active_address, network_conf,
+                                       network_conf_size);
+      if (result == MOBLE_RESULT_SUCCESS)
+      {
+        nvm_operation = 0U;
+        runtime_batch_active = MOBLE_FALSE;
+        runtime_batch_logged = MOBLE_FALSE;
+        return MOBLE_RESULT_SUCCESS;
+      }
+      if (result != MOBLE_RESULT_OUTOFMEMORY)
+      {
+        TRACE_I(TF_PROVISION,
+                "NVM runtime journal append failed result=%d\r\n", result);
+        return result;
+      }
+
+      /* The append page is full. Atomically consolidate the effective RAM
+       * image into the normal double-page store, then reclaim the journal. */
+      runtime_compaction = MOBLE_TRUE;
+      TRACE_I(TF_PROVISION,"NVM runtime journal full: compacting image\r\n");
+    }
+
     TRACE_I(TF_PROVISION,
             "NVM PROCESS rotate begin op=%u active=%u target=%u size=%u\r\n",
             (unsigned int)operation,
@@ -635,6 +1028,13 @@ MOBLE_RESULT PalNvmProcess(void)
     nvm_operation = 0U;
     runtime_batch_active = MOBLE_FALSE;
     runtime_batch_logged = MOBLE_FALSE;
+    if ((urgent_commit != MOBLE_FALSE) ||
+        (runtime_compaction != MOBLE_FALSE))
+    {
+      /* Records contain the CRC of their base page and are already ignored
+       * after this rotation. Erase only after the new base was verified. */
+      (void)PalNvmRuntimeJournalErase();
+    }
     TRACE_I(TF_PROVISION,
             "NVM PROCESS rotate committed active=%u op=%u\r\n",
             (unsigned int)nvm_flash_page,

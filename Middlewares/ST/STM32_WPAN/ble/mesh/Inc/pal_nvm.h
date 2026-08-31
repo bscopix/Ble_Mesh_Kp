@@ -30,6 +30,7 @@
 /* Exported macro ------------------------------------------------------------*/
 /* Exported variables  -------------------------------------------------------*/
 extern const void* mobleNvmBase;
+extern const void* runtimeNvmBase;
 
 /* Private define ------------------------------------------------------------*/
 #define NVM_BASE                                     ((unsigned int)mobleNvmBase)
@@ -67,5 +68,6 @@ MOBLE_RESULT PalNvmCompare(MOBLEUINT32 address,
 MOBLE_RESULT PalNvmErase(MOBLEUINT32 address,
                          MOBLEUINT8 nb_pages);
 MOBLE_RESULT PalNvmProcess(void);
+MOBLE_RESULT PalNvmRuntimeJournalErase(void);
 
 #endif /* __PAL_NVM_H */
