@@ -678,9 +678,8 @@ void MX_APPE_Process(void)
 
   /* USER CODE END MX_APPE_Process_1 */
   UTIL_SEQ_Run(UTIL_SEQ_DEFAULT);
-  (void)HAL_IWDG_Refresh(&happe_iwdg);
+  APPE_WatchdogHeartbeat();
   /* USER CODE BEGIN MX_APPE_Process_2 */
-  ModeManager_HealthPoll();
   /* USER CODE END MX_APPE_Process_2 */
 }
 
@@ -688,11 +687,17 @@ void UTIL_SEQ_Idle(void)
 {
   /* An idle sequencer is healthy on CPU1. Refresh immediately before sleep;
    * a task/callback that never returns cannot reach this point. */
-  (void)HAL_IWDG_Refresh(&happe_iwdg);
+  APPE_WatchdogHeartbeat();
 #if (CFG_LPM_SUPPORTED == 1)
   UTIL_LPM_EnterLowPower();
 #endif /* CFG_LPM_SUPPORTED == 1 */
   return;
+}
+
+void APPE_WatchdogHeartbeat(void)
+{
+  (void)HAL_IWDG_Refresh(&happe_iwdg);
+  ModeManager_HealthPoll();
 }
 
 static void APPE_IwdgInit(void)

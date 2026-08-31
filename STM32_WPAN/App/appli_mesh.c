@@ -21,6 +21,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "ble_common.h"
 #include "app_conf.h"
+#include "app_entry.h"
 #include "hal_common.h"
 #include "ble_mesh.h"
 #include "appli_mesh.h"
@@ -448,6 +449,11 @@ static void Mesh_Task()
 {
   BLEMesh_Process();
   BLEMesh_ModelsProcess(); /* Models Processing */
+
+  /* With APPLI_OPTIM=0 the Mesh task schedules itself forever, so the outer
+   * UTIL_SEQ_Run() never returns. Reaching this point proves that both Mesh
+   * processing stages completed; a blocked callback still prevents refresh. */
+  APPE_WatchdogHeartbeat();
   
   if((UnprovisionInProgress > 0) &&
      (!LL_FLASH_IsActiveFlag_OperationSuspended()))
