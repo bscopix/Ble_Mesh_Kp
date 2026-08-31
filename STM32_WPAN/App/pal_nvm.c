@@ -255,6 +255,26 @@ static MOBLE_RESULT PalRuntimeReadEffective(MOBLEUINT32 address,
   return MOBLE_RESULT_SUCCESS;
 }
 
+static void PalRuntimeBuildRequestedChunk(uint8_t requested[PAL_RUNTIME_DELTA_SIZE],
+                                          uint8_t const *effective,
+                                          uint8_t const *image,
+                                          uint32_t image_size,
+                                          uint32_t offset)
+{
+  uint32_t copy_size = image_size - offset;
+
+  if (copy_size > PAL_RUNTIME_DELTA_SIZE)
+  {
+    copy_size = PAL_RUNTIME_DELTA_SIZE;
+  }
+
+  /* Preserve bytes outside the serialized image in its final partial
+   * doubleword. Reading image_size rounded up to 8 used to consume four
+   * bytes beyond the 3660-byte ST buffer and could create a false delta. */
+  memcpy(requested, effective + offset, PAL_RUNTIME_DELTA_SIZE);
+  memcpy(requested, image + offset, copy_size);
+}
+
 static MOBLE_RESULT PalRuntimeJournalAppend(MOBLEUINT32 active_address,
                                              void const *image,
                                              MOBLEUINT32 image_size)
@@ -269,8 +289,11 @@ static MOBLE_RESULT PalRuntimeJournalAppend(MOBLEUINT32 active_address,
   uint32_t rounded_size = (image_size + 7U) & ~7U;
   uint32_t base_crc;
   uint32_t transaction_id = 1U;
+  uint32_t offset_fingerprint = 2166136261UL;
+  uint32_t verify_changed_count = 0U;
   uint32_t offset;
   uint32_t i;
+  static MOBLEBOOL detailed_diff_logged = MOBLE_FALSE;
 
   if ((runtimeNvmBase == NULL) || (image == NULL) ||
       (rounded_size > FLASH_PAGE_SIZE))
@@ -281,11 +304,17 @@ static MOBLE_RESULT PalRuntimeJournalAppend(MOBLEUINT32 active_address,
   PalRuntimeReadEffective(active_address, runtime_effective_image, rounded_size);
   for (offset = 0U; offset < rounded_size; offset += PAL_RUNTIME_DELTA_SIZE)
   {
+    uint8_t requested[PAL_RUNTIME_DELTA_SIZE];
+
+    PalRuntimeBuildRequestedChunk(requested, runtime_effective_image,
+                                  (uint8_t const *)image, image_size, offset);
     if (memcmp(&runtime_effective_image[offset],
-               (uint8_t const *)image + offset,
+               requested,
                PAL_RUNTIME_DELTA_SIZE) != 0)
     {
       changed_count++;
+      offset_fingerprint ^= offset;
+      offset_fingerprint *= 16777619UL;
     }
   }
 
@@ -329,6 +358,56 @@ static MOBLE_RESULT PalRuntimeJournalAppend(MOBLEUINT32 active_address,
           (unsigned long)free_count,
           (unsigned long)first_free);
 
+  TRACE_I(TF_PROVISION,
+          "NVM runtime diff fingerprint=0x%08lx offsets:",
+          (unsigned long)offset_fingerprint);
+  for (offset = 0U; offset < rounded_size; offset += PAL_RUNTIME_DELTA_SIZE)
+  {
+    uint8_t requested[PAL_RUNTIME_DELTA_SIZE];
+
+    PalRuntimeBuildRequestedChunk(requested, runtime_effective_image,
+                                  (uint8_t const *)image, image_size, offset);
+    if (memcmp(&runtime_effective_image[offset], requested,
+               PAL_RUNTIME_DELTA_SIZE) != 0)
+    {
+      TRACE_I(TF_PROVISION," %04lx", (unsigned long)offset);
+    }
+  }
+  TRACE_I(TF_PROVISION,"\r\n");
+
+  if (detailed_diff_logged == MOBLE_FALSE)
+  {
+    for (offset = 0U; offset < rounded_size; offset += PAL_RUNTIME_DELTA_SIZE)
+    {
+      uint8_t requested[PAL_RUNTIME_DELTA_SIZE];
+      uint32_t old_low;
+      uint32_t old_high;
+      uint32_t new_low;
+      uint32_t new_high;
+
+      PalRuntimeBuildRequestedChunk(requested, runtime_effective_image,
+                                    (uint8_t const *)image, image_size, offset);
+      if (memcmp(&runtime_effective_image[offset], requested,
+                 PAL_RUNTIME_DELTA_SIZE) == 0)
+      {
+        continue;
+      }
+
+      memcpy(&old_low, &runtime_effective_image[offset], sizeof(old_low));
+      memcpy(&old_high, &runtime_effective_image[offset + 4U], sizeof(old_high));
+      memcpy(&new_low, requested, sizeof(new_low));
+      memcpy(&new_high, &requested[4], sizeof(new_high));
+      TRACE_I(TF_PROVISION,
+              "NVM runtime diff off=%04lx old=%08lx%08lx new=%08lx%08lx\r\n",
+              (unsigned long)offset,
+              (unsigned long)old_high,
+              (unsigned long)old_low,
+              (unsigned long)new_high,
+              (unsigned long)new_low);
+    }
+    detailed_diff_logged = MOBLE_TRUE;
+  }
+
   if ((first_free == record_count) || (free_count < (changed_count + 1U)))
   {
     return MOBLE_RESULT_OUTOFMEMORY;
@@ -347,8 +426,12 @@ static MOBLE_RESULT PalRuntimeJournalAppend(MOBLEUINT32 active_address,
   i = first_free;
   for (offset = 0U; offset < rounded_size; offset += PAL_RUNTIME_DELTA_SIZE)
   {
+    uint8_t requested[PAL_RUNTIME_DELTA_SIZE];
+
+    PalRuntimeBuildRequestedChunk(requested, runtime_effective_image,
+                                  (uint8_t const *)image, image_size, offset);
     if (memcmp(&runtime_effective_image[offset],
-               (uint8_t const *)image + offset,
+               requested,
                PAL_RUNTIME_DELTA_SIZE) == 0)
     {
       continue;
@@ -360,8 +443,7 @@ static MOBLE_RESULT PalRuntimeJournalAppend(MOBLEUINT32 active_address,
     record.length = PAL_RUNTIME_DELTA_SIZE;
     record.base_crc = base_crc;
     record.reserved = transaction_id;
-    memcpy(&record.data, (uint8_t const *)image + offset,
-           PAL_RUNTIME_DELTA_SIZE);
+    memcpy(&record.data, requested, PAL_RUNTIME_DELTA_SIZE);
     if (PalRuntimeWriteRecord(i, &record) != MOBLE_RESULT_SUCCESS)
     {
       return MOBLE_RESULT_FAIL;
@@ -388,6 +470,31 @@ static MOBLE_RESULT PalRuntimeJournalAppend(MOBLEUINT32 active_address,
           (unsigned long)changed_count,
           (unsigned long)i,
           (unsigned long)record_count);
+
+  /* Prove that the just-committed transaction reconstructs the exact ST
+   * image. A non-zero result distinguishes an overlay defect from fields that
+   * the library genuinely changes again before its next save request. */
+  PalRuntimeReadEffective(active_address, runtime_effective_image, rounded_size);
+  for (offset = 0U; offset < rounded_size; offset += PAL_RUNTIME_DELTA_SIZE)
+  {
+    uint8_t requested[PAL_RUNTIME_DELTA_SIZE];
+
+    PalRuntimeBuildRequestedChunk(requested, runtime_effective_image,
+                                  (uint8_t const *)image, image_size, offset);
+    if (memcmp(&runtime_effective_image[offset], requested,
+               PAL_RUNTIME_DELTA_SIZE) != 0)
+    {
+      verify_changed_count++;
+    }
+  }
+  TRACE_I(TF_PROVISION,
+          "NVM runtime journal verify tx=%lu remaining=%lu\r\n",
+          (unsigned long)transaction_id,
+          (unsigned long)verify_changed_count);
+  if (verify_changed_count != 0U)
+  {
+    return MOBLE_RESULT_FAIL;
+  }
   return MOBLE_RESULT_SUCCESS;
 }
 
