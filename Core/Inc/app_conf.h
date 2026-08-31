@@ -606,12 +606,24 @@ typedef enum
 /**
  * Enable or Disable traces in application
  */
-#define CFG_DEBUG_APP_TRACE     1
+#define CFG_DEBUG_APP_TRACE     0
+
+/**
+ * Product trace profile. Keep rare boot/fault/storage diagnostics while the
+ * verbose application/HCI event stream remains disabled.
+ */
+#define CFG_TRACE_ESSENTIAL     1
 
 #if (CFG_DEBUG_APP_TRACE != 0)
 #define APP_DBG_MSG                 PRINT_MESG_DBG
 #else
 #define APP_DBG_MSG                 PRINT_NO_MESG
+#endif
+
+#if (CFG_TRACE_ESSENTIAL != 0)
+#define APP_ESSENTIAL_MSG           PRINT_MESG_DBG
+#else
+#define APP_ESSENTIAL_MSG           PRINT_NO_MESG
 #endif
 
 #if ( (CFG_DEBUG_BLE_TRACE != 0) || (CFG_DEBUG_APP_TRACE != 0) )

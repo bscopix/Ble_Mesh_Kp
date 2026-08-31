@@ -66,13 +66,8 @@ void Appli_GetAppKeyAddParamsCb(model_securityKeyParams_t* appKeyAddParams)
   /*Success Command*/
   if(appKeyAddParams->status == 0x00)
   {
-    TRACE_I(TF_CONFIG_SERVER,"AppKey is: ");
-    for (MOBLEUINT8 count=0 ; count<appKeyAddParams->keySize; count++)
-    {
-      TRACE_I(TF_CONFIG_SERVER,"%.2x", *(appKeyAddParams->appKey));
-      appKeyAddParams->appKey++;
-    }  
-    TRACE_I(TF_CONFIG_SERVER," \r\n");
+    TRACE_I(TF_CONFIG_SERVER,"AppKey accepted (value hidden, size=%u)\r\n",
+            appKeyAddParams->keySize);
   }
 }
 
@@ -130,13 +125,8 @@ void Appli_GetAppKeyUpdateParamsCb(model_securityKeyParams_t* appKeyUpdatedParam
   /*Success Command*/
   if(appKeyUpdatedParams->status == 0x00)
   {
-    TRACE_I(TF_CONFIG_SERVER,"Updated AppKey is: ");
-    for (MOBLEUINT8 count=0 ; count<appKeyUpdatedParams->keySize; count++)
-    {
-      TRACE_I(TF_CONFIG_SERVER,"%.2x", *(appKeyUpdatedParams->appKey));
-      appKeyUpdatedParams->appKey++;
-    }
-    TRACE_I(TF_CONFIG_SERVER," \r\n");
+    TRACE_I(TF_CONFIG_SERVER,"Updated AppKey accepted (value hidden, size=%u)\r\n",
+            appKeyUpdatedParams->keySize);
     TRACE_I(TF_CONFIG_SERVER,"It will be replaced by old appKey after Key Refresh \r\n");
   }
   
@@ -158,13 +148,8 @@ void Appli_GetNetKeyAddParamsCb(model_securityKeyParams_t* netKeyAddParams)
   /*Success Command*/
   if(netKeyAddParams->status == 0x00)
   {
-    TRACE_I(TF_CONFIG_SERVER,"NetKey is: ");
-    for (MOBLEUINT8 count=0 ; count < netKeyAddParams->keySize; count++)
-    {
-      TRACE_I(TF_CONFIG_SERVER,"%.2x", *(netKeyAddParams->netKey));
-      netKeyAddParams->netKey++;
-    } 
-    TRACE_I(TF_CONFIG_SERVER," \r\n");
+    TRACE_I(TF_CONFIG_SERVER,"NetKey accepted (value hidden, size=%u)\r\n",
+            netKeyAddParams->keySize);
   }
 }
 
@@ -213,14 +198,9 @@ void Appli_GetNetKeyUpdateParamsCb(model_securityKeyParams_t* netKeyUpdatedParam
   Appli_MarkConfigServerMutation(netKeyUpdatedParams->status);
   if(netKeyUpdatedParams->status == 0)
   {
-    TRACE_I(TF_CONFIG_SERVER,"Updated NetKey is:");
-    for (MOBLEUINT8 count=0; count<netKeyUpdatedParams->keySize; count++)
-    {
-      TRACE_I(TF_CONFIG_SERVER,"%.2x", *(netKeyUpdatedParams->netKey));
-      netKeyUpdatedParams->netKey++;
-    }
-  TRACE_I(TF_CONFIG_SERVER," \r\n");
-  TRACE_I(TF_CONFIG_SERVER,"It will be replaced by old netKey after Key Refresh \r\n");
+    TRACE_I(TF_CONFIG_SERVER,"Updated NetKey accepted (value hidden, size=%u)\r\n",
+            netKeyUpdatedParams->keySize);
+    TRACE_I(TF_CONFIG_SERVER,"It will be replaced by old netKey after Key Refresh \r\n");
   }
 }
 

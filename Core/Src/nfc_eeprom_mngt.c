@@ -489,7 +489,7 @@ void SetProvisioningBootRequest(uint16_t timeoutSeconds, uint8_t reason)
     timeoutSeconds = PROVISION_TIMEOUT_DEFAULT_S;
   }
 
-  APP_DBG_MSG("[EEPROM][MNGT] SetProvisioningBootRequest req: timeout=%u reason=%u\r\n",
+  APP_ESSENTIAL_MSG("[EEPROM][MNGT] SetProvisioningBootRequest req: timeout=%u reason=%u\r\n",
               timeoutSeconds,
               reason);
 
@@ -504,7 +504,7 @@ void SetProvisioningBootRequest(uint16_t timeoutSeconds, uint8_t reason)
 
 void ClearProvisioningBootRequest(uint8_t result)
 {
-  APP_DBG_MSG("[EEPROM][MNGT] ClearProvisioningBootRequest req: result=%u\r\n", result);
+  APP_ESSENTIAL_MSG("[EEPROM][MNGT] ClearProvisioningBootRequest req: result=%u\r\n", result);
 
   Eeprom_mngt_Config.ProvisionBootFlag = PROVISION_BOOT_FLAG_NONE;
   Eeprom_mngt_Config.ProvisionResult = result;
@@ -674,7 +674,7 @@ static void EepromMngtInitialisation(void)
                                (uint32_t *)&Eeprom_mngt_Config,
                                (uint32_t)&(((Eeprom_mngt_Config_t *)NULL)->Crc));
 
-  APP_DBG_MSG("[EEPROM][MNGT] boot read: ver=%u boot=0x%02x timeout=%u reason=%u result=%u crc_stored=0x%08lx crc_calc=0x%08lx\r\n",
+  APP_ESSENTIAL_MSG("[EEPROM][MNGT] boot read: ver=%u boot=0x%02x timeout=%u reason=%u result=%u crc_stored=0x%08lx crc_calc=0x%08lx\r\n",
               Eeprom_mngt_Config.VersionEeprom,
               Eeprom_mngt_Config.ProvisionBootFlag,
               (uint16_t)Eeprom_mngt_Config.ProvisionTimeoutSecondsLsb
@@ -689,7 +689,7 @@ static void EepromMngtInitialisation(void)
   {
     writeCfg = true;
 
-    APP_DBG_MSG("[EEPROM][MNGT] invalid config -> reset defaults (ver=%u expected=%u, crc_ok=%u)\r\n",
+    APP_ESSENTIAL_MSG("[EEPROM][MNGT] invalid config -> reset defaults (ver=%u expected=%u, crc_ok=%u)\r\n",
                 Eeprom_mngt_Config.VersionEeprom,
                 EEPROM_VERSION_CONFIG,
                 (Eeprom_mngt_Config.Crc == CRCValue) ? 1U : 0U);
@@ -728,7 +728,7 @@ static void EepromMngtInitialisation(void)
     {
     }
 
-    APP_DBG_MSG("[EEPROM][MNGT] defaults written: boot=0x%02x timeout=%u reason=%u result=%u\r\n",
+    APP_ESSENTIAL_MSG("[EEPROM][MNGT] defaults written: boot=0x%02x timeout=%u reason=%u result=%u\r\n",
                 cfg_tmp.ProvisionBootFlag,
                 (uint16_t)cfg_tmp.ProvisionTimeoutSecondsLsb
                   | ((uint16_t)cfg_tmp.ProvisionTimeoutSecondsMsb << 8),
@@ -757,7 +757,7 @@ static void WriteMngtConfigToEeprom(void)
   {
   }
 
-  APP_DBG_MSG("[EEPROM][MNGT] write done: boot=0x%02x timeout=%u reason=%u result=%u crc=0x%08lx\r\n",
+  APP_ESSENTIAL_MSG("[EEPROM][MNGT] write done: boot=0x%02x timeout=%u reason=%u result=%u crc=0x%08lx\r\n",
               Eeprom_mngt_Config.ProvisionBootFlag,
               (uint16_t)Eeprom_mngt_Config.ProvisionTimeoutSecondsLsb
                 | ((uint16_t)Eeprom_mngt_Config.ProvisionTimeoutSecondsMsb << 8),
@@ -777,7 +777,7 @@ static void WriteMngtConfigToEeprom(void)
     verify_timeout = (uint16_t)cfg_verify.ProvisionTimeoutSecondsLsb
       | ((uint16_t)cfg_verify.ProvisionTimeoutSecondsMsb << 8);
 
-    APP_DBG_MSG("[EEPROM][MNGT] verify read: ver=%u boot=0x%02x timeout=%u reason=%u result=%u crc_stored=0x%08lx crc_calc=0x%08lx\r\n",
+    APP_ESSENTIAL_MSG("[EEPROM][MNGT] verify read: ver=%u boot=0x%02x timeout=%u reason=%u result=%u crc_stored=0x%08lx crc_calc=0x%08lx\r\n",
                 cfg_verify.VersionEeprom,
                 cfg_verify.ProvisionBootFlag,
                 verify_timeout,
@@ -788,6 +788,6 @@ static void WriteMngtConfigToEeprom(void)
   }
   else
   {
-    APP_DBG_MSG("[EEPROM][MNGT] verify read failed: status=%ld\r\n", (long)read_status);
+    APP_ESSENTIAL_MSG("[EEPROM][MNGT] verify read failed: status=%ld\r\n", (long)read_status);
   }
 }

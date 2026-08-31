@@ -120,12 +120,12 @@ void FaultContext_ReportAndClear(void)
 {
   if (g_FaultContext.magic == 0xDEADFA11UL)
   {
-    APP_DBG_MSG("[FAULT] CFSR=%08lx HFSR=%08lx BFAR=%08lx MMFAR=%08lx\r\n",
+    APP_ESSENTIAL_MSG("[FAULT] CFSR=%08lx HFSR=%08lx BFAR=%08lx MMFAR=%08lx\r\n",
                 (unsigned long)g_FaultContext.cfsr,
                 (unsigned long)g_FaultContext.hfsr,
                 (unsigned long)g_FaultContext.bfar,
                 (unsigned long)g_FaultContext.mmfar);
-    APP_DBG_MSG("[FAULT] MSP=%08lx PC=%08lx LR=%08lx PSP=%08lx PC=%08lx LR=%08lx\r\n",
+    APP_ESSENTIAL_MSG("[FAULT] MSP=%08lx PC=%08lx LR=%08lx PSP=%08lx PC=%08lx LR=%08lx\r\n",
                 (unsigned long)g_FaultContext.msp,
                 (unsigned long)g_FaultContext.msp_pc,
                 (unsigned long)g_FaultContext.msp_lr,

@@ -417,7 +417,7 @@ void APP_BLE_Init(void)
   boot_opcode = GetNfcBootOpcode();
   if (boot_opcode != NFC_BOOT_OPCODE_NONE)
   {
-    APP_DBG_MSG("==>> NFC boot opcode detected: 0x%02x\n", boot_opcode);
+    APP_ESSENTIAL_MSG("==>> NFC boot opcode detected: 0x%02x\n", boot_opcode);
 
     if (boot_opcode == NFC_BOOT_OPCODE_MESH_FACTORY_RESET)
     {
@@ -425,18 +425,18 @@ void APP_BLE_Init(void)
 
       if (MOBLE_FAILED(Appli_MeshEraseProvisioningStorage()))
       {
-        APP_DBG_MSG("==>> NFC boot rescue failed: mesh NVM erase error\n");
+        APP_ESSENTIAL_MSG("==>> NFC boot rescue failed: mesh NVM erase error\n");
       }
       else
       {
-        APP_DBG_MSG("==>> NFC boot rescue: mesh provisioning storage erased\n");
+        APP_ESSENTIAL_MSG("==>> NFC boot rescue: mesh provisioning storage erased\n");
       }
 
       ClearProvisioningBootRequest(PROVISION_RESULT_UNKNOWN);
     }
     else
     {
-      APP_DBG_MSG("==>> NFC boot opcode unknown, clearing\n");
+      APP_ESSENTIAL_MSG("==>> NFC boot opcode unknown, clearing\n");
       ClearNfcBootOpcode();
     }
   }
@@ -446,7 +446,7 @@ void APP_BLE_Init(void)
   reset_flags = RCC->CSR;
   ModeManager_Init(reset_flags);
   FaultContext_ReportAndClear();
-  APP_DBG_MSG("==>> Reset flags: CSR=0x%08x PIN=%u POR=%u SFT=%u IWDG=%u WWDG=%u LPWR=%u\n",
+  APP_ESSENTIAL_MSG("==>> Reset flags: CSR=0x%08x PIN=%u POR=%u SFT=%u IWDG=%u WWDG=%u LPWR=%u\n",
               reset_flags,
               (reset_flags & RCC_CSR_PINRSTF) ? 1U : 0U,
               (reset_flags & RCC_CSR_BORRSTF) ? 1U : 0U,
@@ -455,11 +455,11 @@ void APP_BLE_Init(void)
               (reset_flags & RCC_CSR_WWDGRSTF) ? 1U : 0U,
               (reset_flags & RCC_CSR_LPWRRSTF) ? 1U : 0U);
   __HAL_RCC_CLEAR_RESET_FLAGS();
-  APP_DBG_MSG("==>> Boot provisioning state: %s (result=%u boot_req=%u)\n",
+  APP_ESSENTIAL_MSG("==>> Boot provisioning state: %s (result=%u boot_req=%u)\n",
               (provision_result == PROVISION_RESULT_SUCCESS) ? "PROVISIONED" : "UNPROVISIONED_OR_UNKNOWN",
               provision_result,
               provisioning_boot_requested);
-  APP_DBG_MSG("==>> Boot mode: %u (persistent=%u mesh=%u)\n",
+  APP_ESSENTIAL_MSG("==>> Boot mode: %u (persistent=%u mesh=%u)\n",
               (unsigned int)ModeManager_GetBootMode(),
               ModeManager_IsPersistentStateValid() ? 1U : 0U,
               ModeManager_ShouldStartMesh() ? 1U : 0U);
@@ -519,7 +519,7 @@ void APP_BLE_Init(void)
   status = SHCI_C2_BLE_Init(&ble_init_cmd_packet);
   if (status != SHCI_Success)
   {
-    APP_DBG_MSG("  Fail   : SHCI_C2_BLE_Init command, result: 0x%02x\n\r", status);
+    APP_ESSENTIAL_MSG("  Fail   : SHCI_C2_BLE_Init command, result: 0x%02x\n\r", status);
     /* if you are here, maybe CPU2 doesn't contain STM32WB_Copro_Wireless_Binaries, see Release_Notes.html */
     Error_Handler();
   }
