@@ -489,24 +489,36 @@ static void Mesh_Task()
 */ 
 static void Appli_Task()
 {
-  if ((ProvisioningSessionCommitPending != 0U) ||
-      (MeshConfigCommitPending != 0U))
+  uint8_t controlled_commit_pending =
+      ((ProvisioningSessionCommitPending != 0U) ||
+       (MeshConfigCommitPending != 0U)) ? 1U : 0U;
+
+  if ((controlled_commit_pending != 0U) ||
+      (nvm_operation != 0U))
   {
     MOBLE_RESULT nvm_result = PalNvmProcess();
 
-    /* Never reset before the Mesh library has committed its serialized
-     * network image. PalNvmProcess deliberately defers while PB-GATT/Proxy is
-     * connected, hence this task is armed by the disconnect callback. */
+    /* Runtime SEQ/RPL/model-state operations must enter PalNvmProcess too:
+     * this is where the 15 minute batch deadline is maintained and flushed.
+     * Config/provisioning commits additionally keep this task armed until the
+     * complete image is durable, before any controlled reset. */
     if ((nvm_result != MOBLE_RESULT_SUCCESS) || (nvm_operation != 0U))
     {
-      TRACE_I(TF_PROVISION,"Mesh commit waiting for NVM op=%u result=%d\r\n",
-              (unsigned int)nvm_operation,
-              nvm_result);
-      UTIL_SEQ_SetTask(1UL << CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
-      return;
-    }
+      if (controlled_commit_pending != 0U)
+      {
+        TRACE_I(TF_PROVISION,"Mesh commit waiting for NVM op=%u result=%d\r\n",
+                (unsigned int)nvm_operation,
+                nvm_result);
+        UTIL_SEQ_SetTask(1UL << CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
+        return;
+      }
 
-    if (IsProvisioningRuntimeSessionActive())
+      /* A runtime batch may remain pending for 15 minutes. Keep normal model
+       * processing alive while ensuring this task checks the deadline again. */
+      UTIL_SEQ_SetTask(1UL << CFG_TASK_APPLI_REQ_ID, CFG_SCH_PRIO_0);
+    }
+    else if ((controlled_commit_pending != 0U) &&
+             IsProvisioningRuntimeSessionActive())
     {
       ProvisioningSessionCommitPending = 0U;
       MeshConfigCommitPending = 0U;
@@ -526,7 +538,8 @@ static void Appli_Task()
         TRACE_I(TF_PROVISION,"Provisioning committed but mode NVM write failed; keep runtime alive\r\n");
       }
     }
-    else if (MeshConfigCommitPending != 0U)
+    else if ((controlled_commit_pending != 0U) &&
+             (MeshConfigCommitPending != 0U))
     {
       /* Config Server traffic and the following flash rotation coincide with
        * the ST library rearming Proxy advertising.  Some controller/library

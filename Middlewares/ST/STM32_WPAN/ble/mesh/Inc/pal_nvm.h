@@ -69,5 +69,6 @@ MOBLE_RESULT PalNvmErase(MOBLEUINT32 address,
                          MOBLEUINT8 nb_pages);
 MOBLE_RESULT PalNvmProcess(void);
 MOBLE_RESULT PalNvmRuntimeJournalErase(void);
+void PalNvmRuntimeJournalReport(void);
 
 #endif /* __PAL_NVM_H */

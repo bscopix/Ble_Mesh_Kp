@@ -380,6 +380,57 @@ static MOBLE_RESULT PalRuntimeJournalAppend(MOBLEUINT32 active_address,
   return MOBLE_RESULT_SUCCESS;
 }
 
+void PalNvmRuntimeJournalReport(void)
+{
+  PalRuntimeRecord_t const *records =
+      (PalRuntimeRecord_t const *)runtimeNvmBase;
+  uint32_t record_count = FLASH_PAGE_SIZE / sizeof(PalRuntimeRecord_t);
+  uint32_t committed_data_count = 0U;
+  uint32_t transaction_count = 0U;
+  uint32_t invalid_count = 0U;
+  uint32_t used_count = 0U;
+  uint32_t i;
+
+  if (runtimeNvmBase == NULL)
+  {
+    TRACE_I(TF_PROVISION,"NVM runtime journal: unavailable\r\n");
+    return;
+  }
+
+  for (i = 0U; i < record_count; i++)
+  {
+    if (PalRuntimeRecordIsErased(&records[i]) != MOBLE_FALSE)
+    {
+      continue;
+    }
+
+    used_count++;
+    if (PalRuntimeRecordIsValid(&records[i]) == MOBLE_FALSE)
+    {
+      invalid_count++;
+    }
+    else if (records[i].magic == PAL_RUNTIME_TX_MAGIC)
+    {
+      transaction_count++;
+    }
+    else if ((records[i].magic == PAL_RUNTIME_DATA_MAGIC) &&
+             (PalRuntimeTransactionIsCommitted(records, record_count, i,
+                                               records[i].base_crc,
+                                               records[i].reserved) != MOBLE_FALSE))
+    {
+      committed_data_count++;
+    }
+  }
+
+  TRACE_I(TF_PROVISION,
+          "NVM runtime journal: addr=0x%08lx used=%lu deltas=%lu tx=%lu invalid=%lu\r\n",
+          (unsigned long)runtimeNvmBase,
+          (unsigned long)used_count,
+          (unsigned long)committed_data_count,
+          (unsigned long)transaction_count,
+          (unsigned long)invalid_count);
+}
+
 static MOBLEUINT32 PalNvmManagedStartAddress(void)
 {
   MOBLEUINT32 managed_start = (MOBLEUINT32)NVM_BASE;

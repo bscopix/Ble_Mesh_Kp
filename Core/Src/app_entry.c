@@ -205,6 +205,7 @@ void MX_APPE_Init(void)
           (unsigned long)prvsnr_data,
           (unsigned long)modeNvmBase,
           (unsigned long)runtimeNvmBase);
+  PalNvmRuntimeJournalReport();
 /* USER CODE END APPE_Init_1 */
   appe_Tl_Init();	/* Initialize all transport layers */
 
