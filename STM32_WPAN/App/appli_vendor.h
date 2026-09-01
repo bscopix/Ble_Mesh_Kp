@@ -41,6 +41,12 @@ MOBLE_RESULT Appli_Vendor_SendBigDataPacket(void);
 MOBLE_RESULT Appli_Vendor_SetBigDataPacket(MOBLEUINT8 *data, MOBLEUINT32 length,
                                        MOBLEUINT8 elementIndex , MOBLE_ADDRESS dst_peer);
 void Appli_Vendor_Publish(MOBLE_ADDRESS srcAddress);
+void Appli_Vendor_QueueShotEvent(const MOBLEUINT8 *data,
+                                 MOBLEUINT8 length,
+                                 MOBLEUINT32 sequence);
+void Appli_Vendor_QueueTargetEvent(const MOBLEUINT8 *data, MOBLEUINT8 length);
+void Appli_Vendor_QueueBatteryEvent(MOBLEUINT8 level);
+void Appli_Vendor_ProcessEvents(void);
 #endif /* APPLI_VENDOR_H */
 
 

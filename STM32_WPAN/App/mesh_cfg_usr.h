@@ -152,24 +152,23 @@ Either use 0 to disable or 1 to enable
 @  TF_BEACON -> Beacons
 @  TF_SERIAL_CTRL
 */
-/* Enabled by default */
+/* Product trace profile: operational commands and recovery diagnostics only. */
 #ifndef ENABLE_LOW_POWER_FEATURE
-#define TF_GENERIC                                                             1
-#define TF_GENERIC_CLIENT                                                      1
-#define TF_SENSOR                                                              1
-#define TF_LIGHT                                                               1
-#define TF_LIGHT_CLIENT                                                        1
-#define TF_LIGHT_LC                                                            1
+#define TF_GENERIC                                                             0
+#define TF_GENERIC_CLIENT                                                      0
+#define TF_SENSOR                                                              0
+#define TF_LIGHT                                                               0
+#define TF_LIGHT_CLIENT                                                        0
+#define TF_LIGHT_LC                                                            0
 #define TF_VENDOR                                                              1
-#define TF_CONFIG_CLIENT                                                       1
+#define TF_CONFIG_CLIENT                                                       0
 #define TF_CONFIG_SERVER                                                       1
-#define TF_LPN_FRND                                                            1
+#define TF_LPN_FRND                                                            0
 #define TF_PROVISION                                                           1
-#define TF_HANDLER                                                             1
+#define TF_HANDLER                                                             0
 #define TF_INIT                                                                1
-#define TF_MISC                                                                1
-#define TF_SERIAL_CTRL                                                         1
-/* Disabled by default */
+#define TF_MISC                                                                0
+#define TF_SERIAL_CTRL                                                         0
 #define TF_COMMON                                                              0
 #define TF_GENERIC_M                                                           0
 #define TF_GENERIC_CLIENT_M                                                    0
@@ -184,7 +183,7 @@ Either use 0 to disable or 1 to enable
 #define TF_MEMORY                                                              0
 #define TF_BEACON                                                              0
 #define TF_VENDOR_APPLI_TEST                                                   0  /* Vendor commands testing */
-#define TF_NVM                                                                 0
+#define TF_NVM                                                                 1
 #endif
 
 /*******************************************************************************

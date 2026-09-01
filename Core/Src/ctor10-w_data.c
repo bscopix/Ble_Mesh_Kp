@@ -32,12 +32,14 @@
 #include "bas_app.h"
 #include "p2p_server_app.h"
 #include "ctor10-w_data.h"
+#include "appli_vendor.h"
 #include <inttypes.h>
 /* USER CODE END Includes */
 
  extern UART_HandleTypeDef 	hlpuart1;
  
 #define ONE_S   (1 * 1000 * 1000 / CFG_TS_TICK_VAL)
+#define SHOT_MEMORY_CAPACITY 1024U
 typedef struct
  {
  	uint8_t 	Shot;
@@ -60,9 +62,10 @@ typedef struct
  	bool 	EnergySaver;
  	bool    VisualState[5];
  	uint32_t AbsoluteTimeTick;
-	uint8_t ShotMemory[1024][NOTIFY_SHOT_SIZE];
+	uint8_t ShotMemory[SHOT_MEMORY_CAPACITY][NOTIFY_SHOT_SIZE];
 	uint8_t VisualImpacted;
-	uint8_t ShotMemoryIdx;
+	uint16_t ShotMemoryCount;
+	uint32_t ShotNextSequence;
  } DecodeRx_t;
  DecodeRx_t 			RXDecode;
 
@@ -298,18 +301,25 @@ void PrepareBLENotificationShot()
 	}
 	if (BleNotificationShot == TRUE)
 	{
+		uint32_t shot_sequence;
+		uint16_t shot_slot;
+
 		memcpy (&BLENotificationShot[6],&RXDecode.AbsoluteTimeTick,4);
-		//memcpy (&BLENotificationShot[10],&RXDecode.ShotMemoryIdx,2);
 		BLENotificationShot[10] = RXDecode.VisualImpacted;
-		//BLENotificationShot[11] = RXDecode.ShotMemoryIdx;
 		BLENotificationShot[11] = RXDecode.LoadingNbr[1];
 		if (BLENotificationShot[12]!= RXDecode.MaxShotNbr)
 		{
 			BLENotificationShot[12] = RXDecode.MaxShotNbr;
 			BleNotificationShot = TRUE;
 		}
-		memcpy (RXDecode.ShotMemory[RXDecode.ShotMemoryIdx],&BLENotificationShot,NOTIFY_SHOT_SIZE);
-		RXDecode.ShotMemoryIdx++;
+		shot_sequence = RXDecode.ShotNextSequence;
+		shot_slot = (uint16_t)(shot_sequence % SHOT_MEMORY_CAPACITY);
+		memcpy(RXDecode.ShotMemory[shot_slot], BLENotificationShot, NOTIFY_SHOT_SIZE);
+		RXDecode.ShotNextSequence++;
+		if (RXDecode.ShotMemoryCount < SHOT_MEMORY_CAPACITY)
+		{
+			RXDecode.ShotMemoryCount++;
+		}
 		if (RXDecode.VisualState[0] == TRUE &&
 				RXDecode.VisualState[1] == TRUE &&
 				RXDecode.VisualState[2] == TRUE &&
@@ -325,6 +335,7 @@ void PrepareBLENotificationShot()
 		storeShotData(BLENotificationShot,NOTIFY_SHOT_SIZE);
 		UTIL_SEQ_SetTask( 1<<CFG_TASK_SHOT_NOTIFICATION_ID, CFG_SCH_PRIO_1);
 		UTIL_SEQ_SetTask( 1<<CFG_TASK_SHOT_ADV_ID, CFG_SCH_PRIO_2);
+		Appli_Vendor_QueueShotEvent(BLENotificationShot, NOTIFY_SHOT_SIZE, shot_sequence);
 	}
 	//DebugPrintShotNotification(BLENotificationShot);
 }
@@ -357,12 +368,14 @@ void PrepareBLENotificationTarget()
 	{
 		storeTargetData(BLENotificationTarget,NOTIFY_TARGET_SIZE);
 		UTIL_SEQ_SetTask( 1<<CFG_TASK_TARGET_NOTIFICATION_ID, CFG_SCH_PRIO_3);
+		Appli_Vendor_QueueTargetEvent(BLENotificationTarget, NOTIFY_TARGET_SIZE);
 	}
 	
 	if (RXDecode.update_Pwr == TRUE)
 	{
 		RXDecode.update_Pwr = FALSE;
 		BASAPP_UpdateBatLevel(RXDecode.Pwr);
+		Appli_Vendor_QueueBatteryEvent(RXDecode.Pwr);
 	}
 }
 
@@ -410,7 +423,8 @@ static void ResetTargetTimer(void)
 */
 void ctor10w_data_Init(void)
 {
-	RXDecode.ShotMemoryIdx =0;
+	RXDecode.ShotMemoryCount = 0U;
+	RXDecode.ShotNextSequence = 0U;
 	HW_TS_Create(CFG_TIM_PROC_ID_ISR,&ResetTimerFinish.Reset_mgr_timer_Id,hw_ts_SingleShot,ResetTargetTimer);
 	HW_TS_Create(CFG_TIM_PROC_ID_ISR,&ResetTimerNotFinish.Reset_mgr_timer_Id,hw_ts_SingleShot,ResetTargetTimer);
 }
@@ -441,8 +455,8 @@ void SetResetTimerNotFinish(uint8_t NotFinishTimer)
 
 void GetTabShot(void)
 {
-	int i=0;
-	for(i=0;i<RXDecode.ShotMemoryIdx;i++)
+	uint16_t i = 0U;
+	for(i = 0U; i < RXDecode.ShotMemoryCount; i++)
 	{
 		//storeShotTabData(RXDecode.ShotMemory[0],NOTIFY_SHOT_SIZE);
 		//UTIL_SEQ_SetTask( 1<<CFG_TASK_SHOT_NOTIFICATIONTAB_ID, CFG_SCH_PRIO_0);
@@ -490,4 +504,40 @@ uint8_t GetLastTargetNotification(uint8_t *dst, uint8_t max_len)
 uint8_t GetLastBatteryLevel(void)
 {
 	return RXDecode.Pwr;
+}
+
+uint16_t GetShotQueueCount(void)
+{
+	return RXDecode.ShotMemoryCount;
+}
+
+uint32_t GetShotQueueOldestSequence(void)
+{
+	return RXDecode.ShotNextSequence - (uint32_t)RXDecode.ShotMemoryCount;
+}
+
+uint32_t GetShotQueueNextSequence(void)
+{
+	return RXDecode.ShotNextSequence;
+}
+
+bool GetShotBySequence(uint32_t sequence, uint8_t *dst, uint8_t max_len)
+{
+	uint32_t oldest_sequence;
+	uint16_t slot;
+
+	if ((dst == NULL) || (max_len < NOTIFY_SHOT_SIZE))
+	{
+		return false;
+	}
+
+	oldest_sequence = GetShotQueueOldestSequence();
+	if ((sequence < oldest_sequence) || (sequence >= RXDecode.ShotNextSequence))
+	{
+		return false;
+	}
+
+	slot = (uint16_t)(sequence % SHOT_MEMORY_CAPACITY);
+	memcpy(dst, RXDecode.ShotMemory[slot], NOTIFY_SHOT_SIZE);
+	return true;
 }

@@ -22,6 +22,7 @@
 #ifndef __CTOR10_W_DATA_H
 #define __CTOR10_W_DATA_H
 #include <stdint.h>
+#include <stdbool.h>
 /*#ifdef __cplusplus
 extern "C" {
 #endif*/
@@ -39,6 +40,10 @@ void GetHardwareVersion(void);
 uint8_t GetLastShotNotification(uint8_t *dst, uint8_t max_len);
 uint8_t GetLastTargetNotification(uint8_t *dst, uint8_t max_len);
 uint8_t GetLastBatteryLevel(void);
+uint16_t GetShotQueueCount(void);
+uint32_t GetShotQueueOldestSequence(void);
+uint32_t GetShotQueueNextSequence(void);
+bool GetShotBySequence(uint32_t sequence, uint8_t *dst, uint8_t max_len);
 
 extern char DISAPP_HARDWARE_REVISION_NUMBER[6];
 

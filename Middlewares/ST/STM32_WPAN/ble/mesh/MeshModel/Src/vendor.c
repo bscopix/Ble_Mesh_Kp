@@ -545,6 +545,7 @@ MOBLE_RESULT Vendor_OnResponseDataCb(MODEL_MessageHeader_t *pmsgParam,
 void Vendor_Process(void)
 {
   BLEMesh_ModelsSendDelayedPacket();
+  Appli_Vendor_ProcessEvents();
   
   if (Vendor_SendDataFreqState == 0xFF)
   {

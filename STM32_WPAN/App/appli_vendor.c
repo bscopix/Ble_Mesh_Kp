@@ -31,6 +31,8 @@
 #include "models_if.h"
 #include "mesh_cfg.h"
 #include "ctor10-w_data.h"
+#include "p2p_server_app.h"
+#include "dis_app.h"
 #include "nfc_eeprom_mngt.h"
 #include "mode_manager.h"
 #include <string.h>
@@ -54,11 +56,38 @@ typedef struct
   MOBLEUINT8 elementIndex;
 } APPLI_SEND_BIG_DATA_PACKET;
 
+typedef struct
+{
+  MOBLEUINT8 pending;
+  MOBLEUINT32 sequence;
+  MOBLEUINT8 data[NOTIFY_TARGET_SIZE];
+} APPLI_VENDOR_TARGET_EVENT;
+
+typedef struct
+{
+  MOBLEUINT8 pending;
+  MOBLEUINT32 sequence;
+  MOBLEUINT8 level;
+} APPLI_VENDOR_BATTERY_EVENT;
+
+#define APPLI_VENDOR_EVENT_HEADER_SIZE       5U
+#define APPLI_VENDOR_RETRY_DELAY_MS        100U
+#define APPLI_VENDOR_ERROR_TRACE_DELAY_MS 5000U
+
 /* Private variables ---------------------------------------------------------*/
 
 MOBLEUINT8 ResponseBuffer[VENDOR_DATA_BUFFER_SIZE];
 MOBLEUINT16 BuffLength;
 APPLI_SEND_BIG_DATA_PACKET Appli_VendorBigData;
+static MOBLEUINT8 VendorShotPending;
+static MOBLEUINT32 VendorShotNextSequence;
+static MOBLEUINT32 VendorShotEndSequence;
+static APPLI_VENDOR_TARGET_EVENT VendorTargetEvent;
+static APPLI_VENDOR_BATTERY_EVENT VendorBatteryEvent;
+static MOBLEUINT32 VendorTargetNextSequence;
+static MOBLEUINT32 VendorBatteryNextSequence;
+static MOBLEUINT32 VendorNextRetryTick;
+static MOBLEUINT32 VendorNextErrorTraceTick;
 
 /*Variable to enable OTA for received vendor command*/
 extern MOBLEUINT8 Appli_LedState;
@@ -70,7 +99,217 @@ MOBLEUINT32 TestHitCounter = 0;
 extern Appli_LightPwmValue_t Appli_LightPwmValue;
 
 /* Private function prototypes -----------------------------------------------*/
+static MOBLEBOOL Appli_Vendor_IsMeshOperational(void);
+static MOBLE_RESULT Appli_Vendor_CopyStringResponse(const char *value);
+static MOBLE_RESULT Appli_Vendor_SendEvent(MOBLEUINT8 subcmd,
+                                           MOBLEUINT32 sequence,
+                                           const MOBLEUINT8 *data,
+                                           MOBLEUINT8 length);
 /* Private functions ---------------------------------------------------------*/
+
+static MOBLEBOOL Appli_Vendor_IsMeshOperational(void)
+{
+  ModeStatus_t mode_status;
+
+  ModeManager_GetStatus(&mode_status);
+  return ((mode_status.actual_mode == (uint8_t)BOOT_MODE_MESH_OPERATIONAL) &&
+          (GetProvisioningResult() == PROVISION_RESULT_SUCCESS))
+      ? MOBLE_TRUE
+      : MOBLE_FALSE;
+}
+
+static MOBLE_RESULT Appli_Vendor_CopyStringResponse(const char *value)
+{
+  size_t value_length;
+
+  if (value == NULL)
+  {
+    return MOBLE_RESULT_INVALIDARG;
+  }
+
+  value_length = strlen(value);
+  if (value_length > (sizeof(ResponseBuffer) - 1U))
+  {
+    value_length = sizeof(ResponseBuffer) - 1U;
+  }
+
+  memcpy(&ResponseBuffer[1], value, value_length);
+  BuffLength = (MOBLEUINT16)(1U + value_length);
+  return MOBLE_RESULT_SUCCESS;
+}
+
+static MOBLE_RESULT Appli_Vendor_SendEvent(MOBLEUINT8 subcmd,
+                                           MOBLEUINT32 sequence,
+                                           const MOBLEUINT8 *data,
+                                           MOBLEUINT8 length)
+{
+  MOBLEUINT8 event_buffer[APPLI_VENDOR_EVENT_HEADER_SIZE + NOTIFY_SHOT_SIZE];
+
+  if ((data == NULL) ||
+      ((MOBLEUINT32)length > (sizeof(event_buffer) - APPLI_VENDOR_EVENT_HEADER_SIZE)))
+  {
+    return MOBLE_RESULT_INVALIDARG;
+  }
+
+  event_buffer[0] = subcmd;
+  event_buffer[1] = (MOBLEUINT8)(sequence & 0xFFU);
+  event_buffer[2] = (MOBLEUINT8)((sequence >> 8) & 0xFFU);
+  event_buffer[3] = (MOBLEUINT8)((sequence >> 16) & 0xFFU);
+  event_buffer[4] = (MOBLEUINT8)((sequence >> 24) & 0xFFU);
+  memcpy(&event_buffer[APPLI_VENDOR_EVENT_HEADER_SIZE], data, length);
+
+  return BLEMesh_SetRemotePublication(VENDORMODEL_STMICRO_ID1,
+                                      BLEMesh_GetAddress(),
+                                      APPLI_DATA_CNTRL_CMD,
+                                      event_buffer,
+                                      (MOBLEUINT32)APPLI_VENDOR_EVENT_HEADER_SIZE + length,
+                                      MOBLE_FALSE,
+                                      MOBLE_TRUE);
+}
+
+void Appli_Vendor_QueueShotEvent(const MOBLEUINT8 *data,
+                                 MOBLEUINT8 length,
+                                 MOBLEUINT32 sequence)
+{
+  if ((data == NULL) || (length != NOTIFY_SHOT_SIZE) ||
+      (Appli_Vendor_IsMeshOperational() == MOBLE_FALSE))
+  {
+    return;
+  }
+
+  if (VendorShotPending == 0U)
+  {
+    VendorShotNextSequence = sequence;
+    VendorShotPending = 1U;
+  }
+
+  if (sequence >= VendorShotNextSequence)
+  {
+    VendorShotEndSequence = sequence + 1U;
+  }
+}
+
+void Appli_Vendor_QueueTargetEvent(const MOBLEUINT8 *data, MOBLEUINT8 length)
+{
+  if ((data == NULL) || (length != NOTIFY_TARGET_SIZE) ||
+      (Appli_Vendor_IsMeshOperational() == MOBLE_FALSE))
+  {
+    return;
+  }
+
+  VendorTargetEvent.sequence = VendorTargetNextSequence++;
+  memcpy(VendorTargetEvent.data, data, NOTIFY_TARGET_SIZE);
+  VendorTargetEvent.pending = 1U;
+}
+
+void Appli_Vendor_QueueBatteryEvent(MOBLEUINT8 level)
+{
+  if (Appli_Vendor_IsMeshOperational() == MOBLE_FALSE)
+  {
+    return;
+  }
+
+  VendorBatteryEvent.sequence = VendorBatteryNextSequence++;
+  VendorBatteryEvent.level = level;
+  VendorBatteryEvent.pending = 1U;
+}
+
+void Appli_Vendor_ProcessEvents(void)
+{
+  MOBLE_RESULT result;
+  MOBLEUINT32 now;
+  MOBLEUINT8 event_data[NOTIFY_SHOT_SIZE];
+  MOBLEUINT32 oldest_sequence;
+
+  if (Appli_Vendor_IsMeshOperational() == MOBLE_FALSE)
+  {
+    return;
+  }
+
+  now = HAL_GetTick();
+  if ((int32_t)(now - VendorNextRetryTick) < 0)
+  {
+    return;
+  }
+
+  if (BLEMesh_TrsptIsBusyState())
+  {
+    return;
+  }
+
+  if (VendorShotPending != 0U)
+  {
+    oldest_sequence = GetShotQueueOldestSequence();
+    if (VendorShotNextSequence < oldest_sequence)
+    {
+      TRACE_I(TF_VENDOR_M,
+              "Vendor shot event backlog overrun: dropped=%lu\r\n",
+              (unsigned long)(oldest_sequence - VendorShotNextSequence));
+      VendorShotNextSequence = oldest_sequence;
+    }
+
+    if (VendorShotNextSequence >= VendorShotEndSequence)
+    {
+      VendorShotPending = 0U;
+      return;
+    }
+
+    if (!GetShotBySequence(VendorShotNextSequence, event_data, sizeof(event_data)))
+    {
+      VendorShotPending = 0U;
+      return;
+    }
+
+    result = Appli_Vendor_SendEvent(APPLI_SHOT_EVENT,
+                                    VendorShotNextSequence,
+                                    event_data,
+                                    NOTIFY_SHOT_SIZE);
+    if (result == MOBLE_RESULT_SUCCESS)
+    {
+      VendorShotNextSequence++;
+      if (VendorShotNextSequence >= VendorShotEndSequence)
+      {
+        VendorShotPending = 0U;
+      }
+      return;
+    }
+  }
+  else if (VendorTargetEvent.pending != 0U)
+  {
+    result = Appli_Vendor_SendEvent(APPLI_TARGET_EVENT,
+                                    VendorTargetEvent.sequence,
+                                    VendorTargetEvent.data,
+                                    NOTIFY_TARGET_SIZE);
+    if (result == MOBLE_RESULT_SUCCESS)
+    {
+      VendorTargetEvent.pending = 0U;
+      return;
+    }
+  }
+  else if (VendorBatteryEvent.pending != 0U)
+  {
+    result = Appli_Vendor_SendEvent(APPLI_BATTERY_EVENT,
+                                    VendorBatteryEvent.sequence,
+                                    &VendorBatteryEvent.level,
+                                    1U);
+    if (result == MOBLE_RESULT_SUCCESS)
+    {
+      VendorBatteryEvent.pending = 0U;
+      return;
+    }
+  }
+  else
+  {
+    return;
+  }
+
+  VendorNextRetryTick = now + APPLI_VENDOR_RETRY_DELAY_MS;
+  if ((int32_t)(now - VendorNextErrorTraceTick) >= 0)
+  {
+    TRACE_I(TF_VENDOR_M, "Vendor event publication deferred: result=%u\r\n", result);
+    VendorNextErrorTraceTick = now + APPLI_VENDOR_ERROR_TRACE_DELAY_MS;
+  }
+}
 
 /**
 * @brief  Process the Vendor Device Info Command
@@ -174,7 +413,7 @@ MOBLE_RESULT Appli_Vendor_DeviceInfo(MOBLEUINT8 const *data, MOBLEUINT32 length)
     }
   case APPLICATION_VER:
     {
-      /*Insert Command to check Application Version*/
+      status = Appli_Vendor_CopyStringResponse(DISAPP_FIRMWARE_REVISION_NUMBER);
       break;
     }
     
@@ -509,6 +748,113 @@ MOBLE_RESULT Appli_Vendor_Data_write(MOBLEUINT8 const *data, MOBLEUINT32 length)
     {
       ResponseBuffer[1] = GetLastBatteryLevel();
       BuffLength = 2U;
+      break;
+    }
+
+    case APPLI_SHOT_QUEUE_STATUS:
+    {
+      MOBLEUINT16 count = GetShotQueueCount();
+      MOBLEUINT32 oldest = GetShotQueueOldestSequence();
+      MOBLEUINT32 next = GetShotQueueNextSequence();
+
+      if (length != 1U)
+      {
+        status = MOBLE_RESULT_INVALIDARG;
+        break;
+      }
+
+      ResponseBuffer[1] = (MOBLEUINT8)(count & 0xFFU);
+      ResponseBuffer[2] = (MOBLEUINT8)((count >> 8) & 0xFFU);
+      ResponseBuffer[3] = (MOBLEUINT8)(oldest & 0xFFU);
+      ResponseBuffer[4] = (MOBLEUINT8)((oldest >> 8) & 0xFFU);
+      ResponseBuffer[5] = (MOBLEUINT8)((oldest >> 16) & 0xFFU);
+      ResponseBuffer[6] = (MOBLEUINT8)((oldest >> 24) & 0xFFU);
+      ResponseBuffer[7] = (MOBLEUINT8)(next & 0xFFU);
+      ResponseBuffer[8] = (MOBLEUINT8)((next >> 8) & 0xFFU);
+      ResponseBuffer[9] = (MOBLEUINT8)((next >> 16) & 0xFFU);
+      ResponseBuffer[10] = (MOBLEUINT8)((next >> 24) & 0xFFU);
+      BuffLength = 11U;
+      break;
+    }
+
+    case APPLI_SHOT_QUEUE_READ:
+    {
+      MOBLEUINT32 sequence;
+
+      if (length != 5U)
+      {
+        status = MOBLE_RESULT_INVALIDARG;
+        break;
+      }
+
+      sequence = (MOBLEUINT32)data[1]
+               | ((MOBLEUINT32)data[2] << 8)
+               | ((MOBLEUINT32)data[3] << 16)
+               | ((MOBLEUINT32)data[4] << 24);
+      if (!GetShotBySequence(sequence, tmp_data, sizeof(tmp_data)))
+      {
+        status = MOBLE_RESULT_FALSE;
+        break;
+      }
+
+      ResponseBuffer[1] = data[1];
+      ResponseBuffer[2] = data[2];
+      ResponseBuffer[3] = data[3];
+      ResponseBuffer[4] = data[4];
+      memcpy(&ResponseBuffer[5], tmp_data, NOTIFY_SHOT_SIZE);
+      BuffLength = 5U + NOTIFY_SHOT_SIZE;
+      break;
+    }
+
+    case APPLI_RAW_READ:
+    {
+      if (length != 1U)
+      {
+        status = MOBLE_RESULT_INVALIDARG;
+        break;
+      }
+
+      tmp_len = P2PS_GetLastRawNotification(tmp_data, sizeof(tmp_data));
+      if (tmp_len != NOTIFY_RAW_SIZE)
+      {
+        status = MOBLE_RESULT_FALSE;
+        break;
+      }
+
+      memcpy(&ResponseBuffer[1], tmp_data, tmp_len);
+      BuffLength = (MOBLEUINT16)(1U + tmp_len);
+      break;
+    }
+
+    case APPLI_HW_REV_READ:
+    {
+      status = (length == 1U)
+          ? Appli_Vendor_CopyStringResponse(DISAPP_HARDWARE_REVISION_NUMBER)
+          : MOBLE_RESULT_INVALIDARG;
+      break;
+    }
+
+    case APPLI_FW_VER_READ:
+    {
+      status = (length == 1U)
+          ? Appli_Vendor_CopyStringResponse(DISAPP_FIRMWARE_REVISION_NUMBER)
+          : MOBLE_RESULT_INVALIDARG;
+      break;
+    }
+
+    case APPLI_MODEL_READ:
+    {
+      status = (length == 1U)
+          ? Appli_Vendor_CopyStringResponse(DISAPP_MODEL_NUMBER)
+          : MOBLE_RESULT_INVALIDARG;
+      break;
+    }
+
+    case APPLI_MANUFACTURER_READ:
+    {
+      status = (length == 1U)
+          ? Appli_Vendor_CopyStringResponse(DISAPP_MANUFACTURER_NAME)
+          : MOBLE_RESULT_INVALIDARG;
       break;
     }
 
