@@ -563,6 +563,10 @@ static uint64_t ReadConfigLe64(const uint8_t *value)
 static bool BuildNdefIdentityText(char *text, size_t capacity)
 {
   ModeStatus_t mode_status;
+  const char *target_type;
+  const char *surface;
+  const char *mount;
+  const char *comm_mode;
   uint32_t asset_id = ReadConfigLe32(Eeprom_mngt_Config.AssetIdLe);
   uint16_t owner_id = ReadConfigLe16(Eeprom_mngt_Config.OwnerIdLe);
   uint16_t site_id = ReadConfigLe16(Eeprom_mngt_Config.SiteIdLe);
@@ -576,16 +580,28 @@ static bool BuildNdefIdentityText(char *text, size_t capacity)
   if (GetProvisioningResult() == PROVISION_RESULT_SUCCESS)
     mesh_address = (uint16_t)BLEMesh_GetAddress();
 
+  target_type = (Eeprom_mngt_Config.Mode == MODE_PSD) ? "PSD" : "SOLEMS";
+  surface = (Eeprom_mngt_Config.SurfaceKind == SURFACE_KIND_DYNAMIC) ? "DYN" :
+            (Eeprom_mngt_Config.SurfaceKind == SURFACE_KIND_SHUTTERED) ? "SHUT" : "FULL";
+  mount = (Eeprom_mngt_Config.MountPosition == MOUNT_POSITION_UPPER) ? "UP" :
+          (Eeprom_mngt_Config.MountPosition == MOUNT_POSITION_LOWER) ? "LOW" : "SINGLE";
+  switch (mode_status.actual_mode)
+  {
+    case BOOT_MODE_MESH_PROVISIONING: comm_mode = "PROV"; break;
+    case BOOT_MODE_MESH_OPERATIONAL: comm_mode = "MESH"; break;
+    case BOOT_MODE_GATT_MAINTENANCE: comm_mode = "MAINT"; break;
+    case BOOT_MODE_GATT_RECOVERY: comm_mode = "RECOVERY"; break;
+    default: comm_mode = "GATT"; break;
+  }
+
   written = snprintf(text, capacity,
-      "TOEM;A=%08lX;N=%s;O=%04X/%s;S=%04X/%s;D=%016" PRIX64 "/%s;L=%u-%u;T=%u;SF=%u;C=%u;P=%u;M=%04X;F=%s",
+      "TOEM;A=%08lX;N=%s;O=%04X/%s;S=%04X/%s;D=%016" PRIX64 "/%s;L=%u-%s;T=%s;SF=%s;C=%s;P=%s;M=%04X;F=%s",
       (unsigned long)asset_id, Eeprom_name_Config.SSID,
       owner_id, Eeprom_mngt_Config.OwnerLabel,
       site_id, Eeprom_mngt_Config.SiteLabel,
       network_id, Eeprom_mngt_Config.NetworkLabel,
-      Eeprom_mngt_Config.ShotLineNbr, Eeprom_mngt_Config.MountPosition,
-      Eeprom_mngt_Config.Mode, Eeprom_mngt_Config.SurfaceKind,
-      mode_status.actual_mode,
-      (GetProvisioningResult() == PROVISION_RESULT_SUCCESS) ? 1U : 0U,
+      Eeprom_mngt_Config.ShotLineNbr, mount, target_type, surface, comm_mode,
+      (GetProvisioningResult() == PROVISION_RESULT_SUCCESS) ? "YES" : "NO",
       mesh_address, DISAPP_FIRMWARE_REVISION_NUMBER);
   return ((written >= 0) && ((size_t)written < capacity) &&
           ((size_t)written <= TOEM_NDEF_TEXT_MAX_LENGTH));
