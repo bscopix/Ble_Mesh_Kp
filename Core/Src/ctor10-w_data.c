@@ -33,6 +33,7 @@
 #include "p2p_server_app.h"
 #include "ctor10-w_data.h"
 #include "appli_vendor.h"
+#include "target_config_service.h"
 #include <inttypes.h>
 /* USER CODE END Includes */
 
@@ -406,6 +407,10 @@ void GPIOVisualStateDisable()
 */
 static void ResetTargetTimer(void)
 {
+	if (TargetRuntimeService_IsZeroingHoldEnabled() != 0U)
+	{
+		return;
+	}
 	if (RXDecode.VisualState[0] == TRUE ||
 			RXDecode.VisualState[1] == TRUE ||
 			RXDecode.VisualState[2] == TRUE ||

@@ -39,6 +39,7 @@
 #include "dis_app.h"
 #include "bas_app.h"
 #include "nfc_eeprom_mngt.h"
+#include "target_config_service.h"
 #include "mesh_cfg_usr.h"
 #include "appli_mesh.h"
 #include "mode_manager.h"
@@ -445,6 +446,7 @@ void APP_BLE_Init(void)
   provisioning_boot_requested = (uint8_t)(IsProvisioningBootRequested() ? 1U : 0U);
   reset_flags = RCC->CSR;
   ModeManager_Init(reset_flags);
+  EepromNdefRefresh();
   FaultContext_ReportAndClear();
   APP_ESSENTIAL_MSG("==>> Reset flags: CSR=0x%08x PIN=%u POR=%u SFT=%u IWDG=%u WWDG=%u LPWR=%u\n",
               reset_flags,
@@ -750,6 +752,7 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
     {
       if (disconnection_captured != 0U)
       {
+        TargetConfigService_Abort(TARGET_CFG_SOURCE_GATT);
         APP_BLE_HandleDisconnectEvent(disconnection_handle,
                                       disconnection_reason,
                                       0U);

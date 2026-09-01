@@ -32,12 +32,15 @@
 #include "lib_NDEF_Text.h"
 #include "ctor10-w_data.h"
 #include "dbg_trace.h"
+#include "mode_manager.h"
+#include "ble_mesh.h"
+#include "dis_app.h"
 /* USER CODE END Includes */
 
 /* USER CODE BEGIN Private defines */
 
 #define EEPROM_VERSION_NAME   0x01  // version de la struct NAME
-#define EEPROM_VERSION_CONFIG 0x01  // version de la struct CONFIG
+#define EEPROM_VERSION_CONFIG EEPROM_CONFIG_VERSION
 #define ENDZ1            0x06
 #define ENDZ2            0x07
 #define ENDZ3            0x0F
@@ -45,11 +48,15 @@
 #define START_NAME_ZONE   0xE0
 #define START_CONFIG_ZONE 0x100
 #define START_PUBLIC_ZONE 0x140
+#define EEPROM_CAPACITY_BYTES 0x0200U
+#define CONFIG_ZONE_END_EXCLUSIVE 0x0140U
+#define EEPROM_IO_MAX_ATTEMPTS 3U
 /* ST25DV04KC is 512 bytes (0x000..0x1FF). Keep rescue opcode in Zone 1 so it
  * remains RF-writable while zones 2/3 stay protected. */
 #define START_BOOT_CTRL_ZONE NFC_EEPROM_ADDR_BOOT_RESCUE_OPCODE
 
 #define PROVISION_TIMEOUT_DEFAULT_S 120U
+#define TOEM_NDEF_TEXT_MAX_LENGTH 190U
 
 #define I2C_LSB_PWD       0x00000000U
 #define I2C_MSB_PWD       0x00000000U
@@ -77,7 +84,11 @@ static void EepromNameInitialisation(void);
 static void EepromMngtInitialisation(void);
 static void macAdd2string(uint64_t mac, char *str, size_t str_size);
 static uint64_t BuildMacAdd(void);
-static void WriteMngtConfigToEeprom(void);
+static uint32_t ConfigCrc(const Eeprom_mngt_Config_t *config);
+static bool EepromReadBounded(uint16_t address, void *data, uint16_t length);
+static bool EepromWriteBounded(uint16_t address, const void *data, uint16_t length);
+static void BuildDefaultConfig(Eeprom_mngt_Config_t *config);
+static bool BuildNdefIdentityText(char *text, size_t capacity);
 /* USER CODE END Private function prototypes */
 
 /* -------------------------------------------------------------------------- */
@@ -198,9 +209,7 @@ bool isNDEFValid(void)
 {
   uint16_t NDEF_length;
   sRecordInfo_t RecordStruct;
-  char expected_text[30];
-  char mac_str[18];
-  uint8_t *pNDEF = NDEF_Buffer;
+  char expected_text[TOEM_NDEF_TEXT_MAX_LENGTH + 1U];
 
   if (NfcType5_GetLength(&NDEF_length) != NDEF_OK)
   {
@@ -215,26 +224,23 @@ bool isNDEFValid(void)
     return false;
   }
 
-  NDEF_IdentifyBuffer(&RecordStruct, pNDEF);
-  pNDEF += RecordStruct.PayloadOffset + RecordStruct.PayloadLength;
-
-  NDEF_IdentifyBuffer(&RecordStruct, pNDEF);
+  NDEF_IdentifyBuffer(&RecordStruct, NDEF_Buffer);
   if (RecordStruct.NDEF_Type != TEXT_TYPE)
   {
     return false;
   }
-
-  macAdd2string(MacAdd, mac_str, sizeof(mac_str));
-  snprintf(expected_text, sizeof(expected_text), "\002en%s_%s",
-           Eeprom_name_Config.SSID, mac_str);
-
-  if (RecordStruct.PayloadLength != strlen(expected_text))
+  if (!BuildNdefIdentityText(expected_text, sizeof(expected_text)))
   {
     return false;
   }
-  return (memcmp(RecordStruct.PayloadBufferAdd,
+  if ((RecordStruct.PayloadLength < 3U) ||
+      ((RecordStruct.PayloadLength - 3U) != strlen(expected_text)))
+  {
+    return false;
+  }
+  return (memcmp(RecordStruct.PayloadBufferAdd + 3U,
                  expected_text,
-                 RecordStruct.PayloadLength) == 0);
+                 RecordStruct.PayloadLength - 3U) == 0);
 }
 
 /**
@@ -251,39 +257,22 @@ void EepromConfigInitialisation(void)
   // 2) MNGT: ResetTimers / BLE / Mode + CRC
   EepromMngtInitialisation();
 
-  // 3) NDEF
-  if (!isNDEFValid())
-  {
-    CCFileStruct.MagicNumber = NFCT5_MAGICNUMBER_E1_CCFILE;
-    CCFileStruct.Version     = NFCT5_VERSION_V1_0;
-    CCFileStruct.MemorySize  = (ST25DVXXKC_MAX_SIZE / 8) & 0xFF;
-    CCFileStruct.TT5Tag      = 0x05;
+  if (!isNDEFValid()) EepromNdefRefresh();
+}
 
-    while (NfcType5_TT5Init() != NFCTAG_OK);
+void EepromNdefRefresh(void)
+{
+  char text[TOEM_NDEF_TEXT_MAX_LENGTH + 1U];
+  if (!BuildNdefIdentityText(text, sizeof(text))) return;
 
-    // URI record
-    strcpy(URIK.protocol, URI_ID_0x01_STRING);
-    strcpy(URIK.URI_Message, "kiwiprecision.fr/6-biathlon-laser-no-risk");
-    strcpy(URIK.Information, "\0");
-    while (NDEF_WriteURI(&URIK) != NDEF_OK);
-
-    // Text record (SSID + MAC)
-    char mac_str[18];
-    char tbuf[30];
-    macAdd2string(MacAdd, mac_str, sizeof(mac_str));
-    snprintf(tbuf, sizeof(tbuf), "\002en%s_%s",
-             Eeprom_name_Config.SSID, mac_str);
-
-    sRecordInfo_t Textrecord;
-    Textrecord.RecordFlags = SR_Mask | TNF_WellKnown;
-    Textrecord.TypeLength  = TEXT_TYPE_STRING_LENGTH;
-    memcpy(Textrecord.Type, TEXT_TYPE_STRING, TEXT_TYPE_STRING_LENGTH);
-    Textrecord.PayloadBufferAdd = (uint8_t *)tbuf;
-    Textrecord.PayloadLength    = strlen(tbuf);
-    Textrecord.NDEF_Type        = TEXT_TYPE;
-
-    while (NDEF_AppendRecord(&Textrecord) != NDEF_OK);
-  }
+  CCFileStruct.MagicNumber = NFCT5_MAGICNUMBER_E1_CCFILE;
+  CCFileStruct.Version = NFCT5_VERSION_V1_0;
+  CCFileStruct.MemorySize = (ST25DVXXKC_MAX_SIZE / 8) & 0xFF;
+  CCFileStruct.TT5Tag = 0x05;
+  if (NfcType5_TT5Init() != NFCTAG_OK) return;
+  /* CC + TLV + short Text record remains below reserved address 0x00D8. */
+  if ((strlen(text) + 13U) >= START_BOOT_CTRL_ZONE) return;
+  (void)NDEF_WriteText(text);
 }
 
 /**
@@ -291,43 +280,9 @@ void EepromConfigInitialisation(void)
  */
 void EepromPublicInitialisation(void)
 {
-  uint32_t ret;
-  Eeprom_mngt_Public_t Eeprom_mngt_Public_tmp = {0};
-  int i;
-  uint32_t CRCValue;
-
-  ret = NFC07A1_NFCTAG_ReadData(NFC07A1_NFCTAG_INSTANCE,
-                                (uint8_t *)&Eeprom_mngt_Public,
-                                START_PUBLIC_ZONE,
-                                sizeof(Eeprom_mngt_Public));
-  (void)ret;
-
-  CRCValue = HAL_CRC_Calculate(&hcrc,
-                               (uint32_t *)&Eeprom_mngt_Public,
-                               (uint32_t)&(((Eeprom_mngt_Public_t *)NULL)->Crc));
-  if (Eeprom_mngt_Public.Crc != CRCValue)
-  {
-    Eeprom_mngt_Public_tmp.NBR_OF_ATTCHED_CLIENT = 0x00;
-    for (i = 0; i < MAX_NBR_OF_ATTCHED_CLIENT; i++)
-    {
-      Eeprom_mngt_Public_tmp.CLIENT_ATTACHED_LIST[i] = 0;
-    }
-
-    NFC07A1_NFCTAG_PresentI2CPassword(NFC07A1_NFCTAG_INSTANCE, PassWord);
-    Eeprom_mngt_Public_tmp.Crc = HAL_CRC_Calculate(
-        &hcrc,
-        (uint32_t *)&Eeprom_mngt_Public_tmp,
-        (uint32_t)&(((Eeprom_mngt_Public_t *)NULL)->Crc));
-
-    NFC07A1_NFCTAG_WriteData(NFC07A1_NFCTAG_INSTANCE,
-                             (uint8_t *)&Eeprom_mngt_Public_tmp,
-                             START_PUBLIC_ZONE,
-                             sizeof(Eeprom_mngt_Public_tmp));
-
-    memcpy(&Eeprom_mngt_Public,
-           &Eeprom_mngt_Public_tmp,
-           sizeof(Eeprom_mngt_Public));
-  }
+  /* Legacy structure is 248 bytes and would end at 0x0237 on a 0x0200-byte
+   * ST25DV04KC. It has no consumer; keep only a zeroed RAM image. */
+  memset(&Eeprom_mngt_Public, 0, sizeof(Eeprom_mngt_Public));
 }
 
 /* ------------ Getters / Setters publics ---------------------------------- */
@@ -345,6 +300,7 @@ char * GetSSIDName(void)
 
 void SetSSIDName(char *SSIDNext)
 {
+  Eeprom_name_Config_t next;
   if (SSIDNext == NULL)
     return;
 
@@ -352,22 +308,22 @@ void SetSSIDName(char *SSIDNext)
               SSIDNext,
               sizeof(Eeprom_name_Config.SSID)) != 0)
   {
-    memset(Eeprom_name_Config.SSID, 0, sizeof(Eeprom_name_Config.SSID));
-    strncpy(Eeprom_name_Config.SSID,
+    next = Eeprom_name_Config;
+    memset(next.SSID, 0, sizeof(next.SSID));
+    strncpy(next.SSID,
             SSIDNext,
-            sizeof(Eeprom_name_Config.SSID) - 1);
+            sizeof(next.SSID) - 1);
 
-    Eeprom_name_Config.Crc = HAL_CRC_Calculate(
+    next.Crc = HAL_CRC_Calculate(
         &hcrc,
-        (uint32_t *)&Eeprom_name_Config,
+        (uint32_t *)&next,
         (uint32_t)&(((Eeprom_name_Config_t *)NULL)->Crc));
 
-    while (NFC07A1_NFCTAG_WriteData(
-               NFC07A1_NFCTAG_INSTANCE,
-               (uint8_t *)&Eeprom_name_Config,
-               START_NAME_ZONE,
-               sizeof(Eeprom_name_Config_t)) != NFCTAG_OK)
+    if (EepromWriteBounded(START_NAME_ZONE, &next,
+                           sizeof(Eeprom_name_Config_t)))
     {
+      Eeprom_name_Config = next;
+      EepromNdefRefresh();
     }
   }
 }
@@ -382,18 +338,12 @@ void SetResetTimerValFinish(uint8_t ResetTimerFinish)
 {
   if (ResetTimerFinish != Eeprom_mngt_Config.ResetTimerFinish)
   {
-    Eeprom_mngt_Config.ResetTimerFinish = ResetTimerFinish;
-    SetResetTimerFinish(ResetTimerFinish);
-
-    Eeprom_mngt_Config.Crc = HAL_CRC_Calculate(
-        &hcrc,
-        (uint32_t *)&Eeprom_mngt_Config,
-        (uint32_t)&(((Eeprom_mngt_Config_t *)NULL)->Crc));
-
-    NFC07A1_NFCTAG_WriteData(NFC07A1_NFCTAG_INSTANCE,
-                             (uint8_t *)&Eeprom_mngt_Config,
-                             START_CONFIG_ZONE,
-                             sizeof(Eeprom_mngt_Config_t));
+    Eeprom_mngt_Config_t next = Eeprom_mngt_Config;
+    next.ResetTimerFinish = ResetTimerFinish;
+    if (EepromConfigCommit(&next) == EEPROM_STORE_OK)
+    {
+      SetResetTimerFinish(ResetTimerFinish);
+    }
   }
 }
 
@@ -407,18 +357,12 @@ void SetResetTimerValNotFinish(uint8_t ResetTimerNotFinish)
 {
   if (ResetTimerNotFinish != Eeprom_mngt_Config.ResetTimerNotFinish)
   {
-    Eeprom_mngt_Config.ResetTimerNotFinish = ResetTimerNotFinish;
-    SetResetTimerNotFinish(ResetTimerNotFinish);
-
-    Eeprom_mngt_Config.Crc = HAL_CRC_Calculate(
-        &hcrc,
-        (uint32_t *)&Eeprom_mngt_Config,
-        (uint32_t)&(((Eeprom_mngt_Config_t *)NULL)->Crc));
-
-    NFC07A1_NFCTAG_WriteData(NFC07A1_NFCTAG_INSTANCE,
-                             (uint8_t *)&Eeprom_mngt_Config,
-                             START_CONFIG_ZONE,
-                             sizeof(Eeprom_mngt_Config_t));
+    Eeprom_mngt_Config_t next = Eeprom_mngt_Config;
+    next.ResetTimerNotFinish = ResetTimerNotFinish;
+    if (EepromConfigCommit(&next) == EEPROM_STORE_OK)
+    {
+      SetResetTimerNotFinish(ResetTimerNotFinish);
+    }
   }
 }
 
@@ -430,19 +374,13 @@ uint8_t GetMode(void)
 
 void SetMode(uint8_t Mode)
 {
-  if (Mode != Eeprom_mngt_Config.Mode)
+  if (((Mode == MODE_SOLEMS) || (Mode == MODE_PSD)) &&
+      (Mode != Eeprom_mngt_Config.Mode))
   {
-    Eeprom_mngt_Config.Mode = Mode;
-
-    Eeprom_mngt_Config.Crc = HAL_CRC_Calculate(
-        &hcrc,
-        (uint32_t *)&Eeprom_mngt_Config,
-        (uint32_t)&(((Eeprom_mngt_Config_t *)NULL)->Crc));
-
-    NFC07A1_NFCTAG_WriteData(NFC07A1_NFCTAG_INSTANCE,
-                             (uint8_t *)&Eeprom_mngt_Config,
-                             START_CONFIG_ZONE,
-                             sizeof(Eeprom_mngt_Config_t));
+    Eeprom_mngt_Config_t next = Eeprom_mngt_Config;
+    next.Mode = Mode;
+    next.SurfaceKind = (Mode == MODE_PSD) ? SURFACE_KIND_DYNAMIC : SURFACE_KIND_FULL;
+    (void)EepromConfigCommit(&next);
   }
 }
 
@@ -484,6 +422,7 @@ uint8_t GetProvisioningResult(void)
 
 void SetProvisioningBootRequest(uint16_t timeoutSeconds, uint8_t reason)
 {
+  Eeprom_mngt_Config_t next;
   if (timeoutSeconds == 0U)
   {
     timeoutSeconds = PROVISION_TIMEOUT_DEFAULT_S;
@@ -493,23 +432,23 @@ void SetProvisioningBootRequest(uint16_t timeoutSeconds, uint8_t reason)
               timeoutSeconds,
               reason);
 
-  Eeprom_mngt_Config.ProvisionBootFlag = PROVISION_BOOT_FLAG_ACTIVE;
-  Eeprom_mngt_Config.ProvisionTimeoutSecondsLsb = (uint8_t)(timeoutSeconds & 0xFFU);
-  Eeprom_mngt_Config.ProvisionTimeoutSecondsMsb = (uint8_t)((timeoutSeconds >> 8) & 0xFFU);
-  Eeprom_mngt_Config.ProvisionReason = reason;
-  Eeprom_mngt_Config.ProvisionResult = PROVISION_RESULT_UNKNOWN;
-
-  WriteMngtConfigToEeprom();
+  next = Eeprom_mngt_Config;
+  next.ProvisionBootFlag = PROVISION_BOOT_FLAG_ACTIVE;
+  next.ProvisionTimeoutSecondsLsb = (uint8_t)(timeoutSeconds & 0xFFU);
+  next.ProvisionTimeoutSecondsMsb = (uint8_t)((timeoutSeconds >> 8) & 0xFFU);
+  next.ProvisionReason = reason;
+  next.ProvisionResult = PROVISION_RESULT_UNKNOWN;
+  (void)EepromConfigCommit(&next);
 }
 
 void ClearProvisioningBootRequest(uint8_t result)
 {
+  Eeprom_mngt_Config_t next = Eeprom_mngt_Config;
   APP_ESSENTIAL_MSG("[EEPROM][MNGT] ClearProvisioningBootRequest req: result=%u\r\n", result);
 
-  Eeprom_mngt_Config.ProvisionBootFlag = PROVISION_BOOT_FLAG_NONE;
-  Eeprom_mngt_Config.ProvisionResult = result;
-
-  WriteMngtConfigToEeprom();
+  next.ProvisionBootFlag = PROVISION_BOOT_FLAG_NONE;
+  next.ProvisionResult = result;
+  if (EepromConfigCommit(&next) == EEPROM_STORE_OK) EepromNdefRefresh();
 }
 
 void StartProvisioningRuntimeSession(uint16_t timeoutSeconds)
@@ -566,12 +505,7 @@ uint8_t GetNfcBootOpcode(void)
 
 void SetNfcBootOpcode(uint8_t opcode)
 {
-  while (NFC07A1_NFCTAG_WriteData(NFC07A1_NFCTAG_INSTANCE,
-                                  &opcode,
-                                  START_BOOT_CTRL_ZONE,
-                                  1U) != NFCTAG_OK)
-  {
-  }
+  (void)EepromWriteBounded(START_BOOT_CTRL_ZONE, &opcode, 1U);
 }
 
 void ClearNfcBootOpcode(void)
@@ -607,6 +541,56 @@ static uint64_t BuildMacAdd(void)
   return MacAddTmp;
 }
 
+static uint16_t ReadConfigLe16(const uint8_t *value)
+{
+  return (uint16_t)value[0] | ((uint16_t)value[1] << 8);
+}
+
+static uint32_t ReadConfigLe32(const uint8_t *value)
+{
+  return (uint32_t)value[0] | ((uint32_t)value[1] << 8) |
+         ((uint32_t)value[2] << 16) | ((uint32_t)value[3] << 24);
+}
+
+static uint64_t ReadConfigLe64(const uint8_t *value)
+{
+  uint64_t result = 0U;
+  uint8_t index;
+  for (index = 0U; index < 8U; index++) result |= ((uint64_t)value[index] << (8U * index));
+  return result;
+}
+
+static bool BuildNdefIdentityText(char *text, size_t capacity)
+{
+  ModeStatus_t mode_status;
+  uint32_t asset_id = ReadConfigLe32(Eeprom_mngt_Config.AssetIdLe);
+  uint16_t owner_id = ReadConfigLe16(Eeprom_mngt_Config.OwnerIdLe);
+  uint16_t site_id = ReadConfigLe16(Eeprom_mngt_Config.SiteIdLe);
+  uint64_t network_id = ReadConfigLe64(Eeprom_mngt_Config.DestMeshNetworkIdLe);
+  uint16_t mesh_address = 0U;
+  int written;
+
+  if ((text == NULL) || (capacity == 0U)) return false;
+  if (asset_id == 0U) asset_id = (uint32_t)MacAdd;
+  ModeManager_GetStatus(&mode_status);
+  if (GetProvisioningResult() == PROVISION_RESULT_SUCCESS)
+    mesh_address = (uint16_t)BLEMesh_GetAddress();
+
+  written = snprintf(text, capacity,
+      "TOEM;A=%08lX;N=%s;O=%04X/%s;S=%04X/%s;D=%016" PRIX64 "/%s;L=%u-%u;T=%u;SF=%u;C=%u;P=%u;M=%04X;F=%s",
+      (unsigned long)asset_id, Eeprom_name_Config.SSID,
+      owner_id, Eeprom_mngt_Config.OwnerLabel,
+      site_id, Eeprom_mngt_Config.SiteLabel,
+      network_id, Eeprom_mngt_Config.NetworkLabel,
+      Eeprom_mngt_Config.ShotLineNbr, Eeprom_mngt_Config.MountPosition,
+      Eeprom_mngt_Config.Mode, Eeprom_mngt_Config.SurfaceKind,
+      mode_status.actual_mode,
+      (GetProvisioningResult() == PROVISION_RESULT_SUCCESS) ? 1U : 0U,
+      mesh_address, DISAPP_FIRMWARE_REVISION_NUMBER);
+  return ((written >= 0) && ((size_t)written < capacity) &&
+          ((size_t)written <= TOEM_NDEF_TEXT_MAX_LENGTH));
+}
+
 /**
  * @brief  Init zone NAME (SSID + Version + RFU + CRC)
  */
@@ -615,11 +599,10 @@ static void EepromNameInitialisation(void)
   Eeprom_name_Config_t name_tmp = {0};
   uint32_t CRCValue;
 
-  while (NFC07A1_NFCTAG_ReadData(NFC07A1_NFCTAG_INSTANCE,
-                                 (uint8_t *)&Eeprom_name_Config,
-                                 START_NAME_ZONE,
-                                 sizeof(Eeprom_name_Config_t)) != NFCTAG_OK)
+  if (!EepromReadBounded(START_NAME_ZONE, &Eeprom_name_Config,
+                         sizeof(Eeprom_name_Config_t)))
   {
+    memset(&Eeprom_name_Config, 0xFF, sizeof(Eeprom_name_Config));
   }
 
   CRCValue = HAL_CRC_Calculate(&hcrc,
@@ -638,19 +621,9 @@ static void EepromNameInitialisation(void)
                                      (uint32_t *)&name_tmp,
                                      (uint32_t)&(((Eeprom_name_Config_t *)NULL)->Crc));
 
-    while (NFC07A1_NFCTAG_PresentI2CPassword(NFC07A1_NFCTAG_INSTANCE,
-                                             PassWord) != NFCTAG_OK)
-    {
-    }
-
-    while (NFC07A1_NFCTAG_WriteData(NFC07A1_NFCTAG_INSTANCE,
-                                    (uint8_t *)&name_tmp,
-                                    START_NAME_ZONE,
-                                    sizeof(name_tmp)) != NFCTAG_OK)
-    {
-    }
-
-    memcpy(&Eeprom_name_Config, &name_tmp, sizeof(Eeprom_name_Config));
+    (void)NFC07A1_NFCTAG_PresentI2CPassword(NFC07A1_NFCTAG_INSTANCE, PassWord);
+    if (EepromWriteBounded(START_NAME_ZONE, &name_tmp, sizeof(name_tmp)))
+      memcpy(&Eeprom_name_Config, &name_tmp, sizeof(Eeprom_name_Config));
   }
 }
 
@@ -661,13 +634,14 @@ static void EepromMngtInitialisation(void)
 {
   Eeprom_mngt_Config_t cfg_tmp = {0};
   uint32_t CRCValue;
-  bool writeCfg = false;
+  bool read_ok;
 
-  while (NFC07A1_NFCTAG_ReadData(NFC07A1_NFCTAG_INSTANCE,
-                                 (uint8_t *)&Eeprom_mngt_Config,
-                                 START_CONFIG_ZONE,
-                                 sizeof(Eeprom_mngt_Config_t)) != NFCTAG_OK)
+  read_ok = EepromReadBounded(START_CONFIG_ZONE,
+                              &Eeprom_mngt_Config,
+                              sizeof(Eeprom_mngt_Config));
+  if (!read_ok)
   {
+    memset(&Eeprom_mngt_Config, 0xFF, sizeof(Eeprom_mngt_Config));
   }
 
   CRCValue = HAL_CRC_Calculate(&hcrc,
@@ -684,49 +658,17 @@ static void EepromMngtInitialisation(void)
               (unsigned long)Eeprom_mngt_Config.Crc,
               (unsigned long)CRCValue);
 
-  if (Eeprom_mngt_Config.Crc != CRCValue ||
-      Eeprom_mngt_Config.VersionEeprom != EEPROM_VERSION_CONFIG)
+  if ((!read_ok) || Eeprom_mngt_Config.Crc != CRCValue ||
+      Eeprom_mngt_Config.VersionEeprom != EEPROM_VERSION_CONFIG ||
+      !EepromConfigValidate(&Eeprom_mngt_Config))
   {
-    writeCfg = true;
-
     APP_ESSENTIAL_MSG("[EEPROM][MNGT] invalid config -> reset defaults (ver=%u expected=%u, crc_ok=%u)\r\n",
                 Eeprom_mngt_Config.VersionEeprom,
                 EEPROM_VERSION_CONFIG,
                 (Eeprom_mngt_Config.Crc == CRCValue) ? 1U : 0U);
 
-    while (NFC07A1_NFCTAG_PresentI2CPassword(NFC07A1_NFCTAG_INSTANCE,
-                                             PassWord) != NFCTAG_OK)
-    {
-    }
-
-    memset(&cfg_tmp, 0, sizeof(cfg_tmp));
-    cfg_tmp.VersionEeprom       = EEPROM_VERSION_CONFIG;
-    cfg_tmp.ResetTimerFinish    = 0;
-    cfg_tmp.ResetTimerNotFinish = 0;
-    cfg_tmp.BleCongig           = BLE_CONFIG_SERVER;
-    cfg_tmp.Mode                = MODE_SOLEMS;
-    cfg_tmp.ProvisionBootFlag         = PROVISION_BOOT_FLAG_NONE;
-    cfg_tmp.ProvisionTimeoutSecondsLsb = (uint8_t)(PROVISION_TIMEOUT_DEFAULT_S & 0xFFU);
-    cfg_tmp.ProvisionTimeoutSecondsMsb = (uint8_t)((PROVISION_TIMEOUT_DEFAULT_S >> 8) & 0xFFU);
-    cfg_tmp.ProvisionReason           = PROVISION_REASON_NONE;
-    cfg_tmp.ProvisionResult           = PROVISION_RESULT_UNKNOWN;
-    memset(cfg_tmp.RFU, 0xFF, sizeof(cfg_tmp.RFU));
-
-    cfg_tmp.Crc = HAL_CRC_Calculate(&hcrc,
-                                    (uint32_t *)&cfg_tmp,
-                                    (uint32_t)&(((Eeprom_mngt_Config_t *)NULL)->Crc));
-
-    memcpy(&Eeprom_mngt_Config, &cfg_tmp, sizeof(Eeprom_mngt_Config));
-  }
-
-  if (writeCfg)
-  {
-    while (NFC07A1_NFCTAG_WriteData(NFC07A1_NFCTAG_INSTANCE,
-                                    (uint8_t *)&cfg_tmp,
-                                    START_CONFIG_ZONE,
-                                    sizeof(cfg_tmp)) != NFCTAG_OK)
-    {
-    }
+    BuildDefaultConfig(&cfg_tmp);
+    (void)EepromConfigCommit(&cfg_tmp);
 
     APP_ESSENTIAL_MSG("[EEPROM][MNGT] defaults written: boot=0x%02x timeout=%u reason=%u result=%u\r\n",
                 cfg_tmp.ProvisionBootFlag,
@@ -737,57 +679,93 @@ static void EepromMngtInitialisation(void)
   }
 }
 
-static void WriteMngtConfigToEeprom(void)
+static uint32_t ConfigCrc(const Eeprom_mngt_Config_t *config)
 {
-  Eeprom_mngt_Config_t cfg_verify = {0};
-  uint32_t verify_crc = 0U;
-  uint16_t verify_timeout = 0U;
-  int32_t read_status;
+  return HAL_CRC_Calculate(&hcrc, (uint32_t *)config,
+                           (uint32_t)offsetof(Eeprom_mngt_Config_t, Crc));
+}
 
-  Eeprom_mngt_Config.Crc = HAL_CRC_Calculate(
-      &hcrc,
-      (uint32_t *)&Eeprom_mngt_Config,
-      (uint32_t)&(((Eeprom_mngt_Config_t *)NULL)->Crc));
+static bool EepromRangeIsValid(uint16_t address, uint16_t length)
+{
+  uint32_t end = (uint32_t)address + (uint32_t)length;
+  return ((length > 0U) && (end <= EEPROM_CAPACITY_BYTES));
+}
 
-  while (NFC07A1_NFCTAG_WriteData(
-             NFC07A1_NFCTAG_INSTANCE,
-             (uint8_t *)&Eeprom_mngt_Config,
-             START_CONFIG_ZONE,
-             sizeof(Eeprom_mngt_Config_t)) != NFCTAG_OK)
+static bool EepromReadBounded(uint16_t address, void *data, uint16_t length)
+{
+  uint32_t attempt;
+  if ((data == NULL) || !EepromRangeIsValid(address, length)) return false;
+  for (attempt = 0U; attempt < EEPROM_IO_MAX_ATTEMPTS; attempt++)
   {
+    if (NFC07A1_NFCTAG_ReadData(NFC07A1_NFCTAG_INSTANCE, data, address, length) == NFCTAG_OK)
+      return true;
   }
+  return false;
+}
 
-  APP_ESSENTIAL_MSG("[EEPROM][MNGT] write done: boot=0x%02x timeout=%u reason=%u result=%u crc=0x%08lx\r\n",
-              Eeprom_mngt_Config.ProvisionBootFlag,
-              (uint16_t)Eeprom_mngt_Config.ProvisionTimeoutSecondsLsb
-                | ((uint16_t)Eeprom_mngt_Config.ProvisionTimeoutSecondsMsb << 8),
-              Eeprom_mngt_Config.ProvisionReason,
-              Eeprom_mngt_Config.ProvisionResult,
-              (unsigned long)Eeprom_mngt_Config.Crc);
-
-  read_status = NFC07A1_NFCTAG_ReadData(NFC07A1_NFCTAG_INSTANCE,
-                                        (uint8_t *)&cfg_verify,
-                                        START_CONFIG_ZONE,
-                                        sizeof(cfg_verify));
-  if (read_status == NFCTAG_OK)
+static bool EepromWriteBounded(uint16_t address, const void *data, uint16_t length)
+{
+  uint32_t attempt;
+  if ((data == NULL) || !EepromRangeIsValid(address, length)) return false;
+  for (attempt = 0U; attempt < EEPROM_IO_MAX_ATTEMPTS; attempt++)
   {
-    verify_crc = HAL_CRC_Calculate(&hcrc,
-                                   (uint32_t *)&cfg_verify,
-                                   (uint32_t)&(((Eeprom_mngt_Config_t *)NULL)->Crc));
-    verify_timeout = (uint16_t)cfg_verify.ProvisionTimeoutSecondsLsb
-      | ((uint16_t)cfg_verify.ProvisionTimeoutSecondsMsb << 8);
+    if (NFC07A1_NFCTAG_WriteData(NFC07A1_NFCTAG_INSTANCE,
+                                 (uint8_t *)data, address, length) == NFCTAG_OK)
+      return true;
+  }
+  return false;
+}
 
-    APP_ESSENTIAL_MSG("[EEPROM][MNGT] verify read: ver=%u boot=0x%02x timeout=%u reason=%u result=%u crc_stored=0x%08lx crc_calc=0x%08lx\r\n",
-                cfg_verify.VersionEeprom,
-                cfg_verify.ProvisionBootFlag,
-                verify_timeout,
-                cfg_verify.ProvisionReason,
-                cfg_verify.ProvisionResult,
-                (unsigned long)cfg_verify.Crc,
-                (unsigned long)verify_crc);
-  }
-  else
-  {
-    APP_ESSENTIAL_MSG("[EEPROM][MNGT] verify read failed: status=%ld\r\n", (long)read_status);
-  }
+static void BuildDefaultConfig(Eeprom_mngt_Config_t *config)
+{
+  memset(config, 0, sizeof(*config));
+  config->VersionEeprom = EEPROM_VERSION_CONFIG;
+  config->BleCongig = BLE_CONFIG_SERVER;
+  config->Mode = MODE_SOLEMS;
+  config->ProvisionTimeoutSecondsLsb = (uint8_t)(PROVISION_TIMEOUT_DEFAULT_S & 0xFFU);
+  config->ProvisionTimeoutSecondsMsb = (uint8_t)(PROVISION_TIMEOUT_DEFAULT_S >> 8);
+  config->ProvisionResult = PROVISION_RESULT_UNKNOWN;
+  config->MountPosition = MOUNT_POSITION_SINGLE;
+  config->SurfaceKind = SURFACE_KIND_FULL;
+}
+
+bool EepromConfigValidate(const Eeprom_mngt_Config_t *config)
+{
+  if ((config == NULL) || (config->VersionEeprom != EEPROM_VERSION_CONFIG)) return false;
+  if ((config->Mode != MODE_SOLEMS) && (config->Mode != MODE_PSD)) return false;
+  if (config->MountPosition > MOUNT_POSITION_LOWER) return false;
+  if (config->SurfaceKind > SURFACE_KIND_SHUTTERED) return false;
+  if ((config->Mode == MODE_PSD) != (config->SurfaceKind == SURFACE_KIND_DYNAMIC)) return false;
+  if (config->ShotLineNbr == 0xFFU) return false;
+  if (config->OwnerLabel[sizeof(config->OwnerLabel) - 1U] != '\0') return false;
+  if (config->SiteLabel[sizeof(config->SiteLabel) - 1U] != '\0') return false;
+  if (config->NetworkLabel[sizeof(config->NetworkLabel) - 1U] != '\0') return false;
+  return true;
+}
+
+EepromStoreResult EepromConfigCommit(const Eeprom_mngt_Config_t *config)
+{
+  Eeprom_mngt_Config_t next;
+  Eeprom_mngt_Config_t verify;
+
+  if ((START_CONFIG_ZONE + sizeof(next) > CONFIG_ZONE_END_EXCLUSIVE) ||
+      !EepromConfigValidate(config))
+    return EEPROM_STORE_INVALID;
+
+  next = *config;
+  next.Crc = ConfigCrc(&next);
+  if (!EepromWriteBounded(START_CONFIG_ZONE, &next, sizeof(next)))
+    return EEPROM_STORE_IO_ERROR;
+  if (!EepromReadBounded(START_CONFIG_ZONE, &verify, sizeof(verify)))
+    return EEPROM_STORE_IO_ERROR;
+  if ((memcmp(&next, &verify, sizeof(next)) != 0) || (verify.Crc != ConfigCrc(&verify)))
+    return EEPROM_STORE_VERIFY_ERROR;
+
+  Eeprom_mngt_Config = next;
+  return EEPROM_STORE_OK;
+}
+
+void EepromConfigGetSnapshot(Eeprom_mngt_Config_t *config)
+{
+  if (config != NULL) *config = Eeprom_mngt_Config;
 }

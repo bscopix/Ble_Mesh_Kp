@@ -35,6 +35,7 @@
 #include "dis_app.h"
 #include "nfc_eeprom_mngt.h"
 #include "mode_manager.h"
+#include "target_config_service.h"
 #include <string.h>
 extern UART_HandleTypeDef hlpuart1;
 
@@ -1020,6 +1021,32 @@ MOBLE_RESULT Appli_Vendor_Data_write(MOBLEUINT8 const *data, MOBLEUINT32 length)
       ResponseBuffer[10] = (uint8_t)((mode_status.transition_id >> 16) & 0xFFU);
       ResponseBuffer[11] = (uint8_t)((mode_status.transition_id >> 24) & 0xFFU);
       BuffLength = 12U;
+      break;
+    }
+
+    case APPLI_CFG_BEGIN:
+    case APPLI_CFG_FIELD_WRITE:
+    case APPLI_CFG_COMMIT:
+    case APPLI_CFG_ABORT:
+    case APPLI_CFG_FIELD_READ:
+    case APPLI_CFG_STATE_READ:
+    case APPLI_ACTIVE_SURFACE_SET:
+    case APPLI_ACTIVE_SURFACE_READ:
+    case APPLI_RADIUS_SET:
+    case APPLI_RADIUS_READ:
+    case APPLI_ZEROING_HOLD_SET:
+    case APPLI_ZEROING_HOLD_READ:
+    {
+      uint8_t service_length = 0U;
+      TargetCfgStatus service_status = TargetConfigService_Handle(
+          TARGET_CFG_SOURCE_MESH, subCmd, &data[1], (uint8_t)(length - 1U),
+          &ResponseBuffer[2], &service_length);
+      /* Explicit application status: subcommands > 0x1F cannot use the
+       * legacy status-in-high-bits encoding. Always return the response. */
+      ResponseBuffer[0] = subCmd;
+      ResponseBuffer[1] = (MOBLEUINT8)service_status;
+      BuffLength = (MOBLEUINT16)(service_length + 2U);
+      status = MOBLE_RESULT_SUCCESS;
       break;
     }
 

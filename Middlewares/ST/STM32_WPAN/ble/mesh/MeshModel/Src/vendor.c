@@ -147,10 +147,13 @@ MOBLE_RESULT Vendor_WriteLocalDataCb(MODEL_MessageHeader_t *pmsgParams,
              }
            case APPLI_DATA_CNTRL_CMD:
              {
+               MOBLE_RESULT callback_status;
                /*This is callback when ever command is coming for test of response
                  time,command reached count, data byte sent
                */          
-               VendorAppli_cb.DataControlCommand_cb(data,length);    
+               callback_status = VendorAppli_cb.DataControlCommand_cb(data,length);
+               status = (callback_status == MOBLE_RESULT_SUCCESS)
+                   ? STATUS_SUCCESS : STATUS_INVALID_DATA;
                break;       
              } 
              /* Default case - Not valid command */

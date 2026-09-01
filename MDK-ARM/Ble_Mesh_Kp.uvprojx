@@ -408,6 +408,11 @@
               <FilePath>..\Core\Src\nfc_eeprom_mngt.c</FilePath>
             </File>
             <File>
+              <FileName>target_config_service.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\target_config_service.c</FilePath>
+            </File>
+            <File>
               <FileName>flash_driver.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Core\Src\flash_driver.c</FilePath>

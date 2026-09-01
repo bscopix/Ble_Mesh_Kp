@@ -26,6 +26,7 @@ extern "C" {
 #endif*/
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #define MAX_NBR_OF_ATTCHED_CLIENT	30
 enum {
@@ -54,6 +55,24 @@ typedef struct
 	uint32_t	Crc; //must be placed at the end of typedef
 }Eeprom_name_Config_t;
 
+#define EEPROM_CONFIG_VERSION             0x02U
+#define EEPROM_CONFIG_SIZE                64U
+#define EEPROM_CONFIG_OWNER_LABEL_SIZE     8U
+#define EEPROM_CONFIG_SITE_LABEL_SIZE     10U
+#define EEPROM_CONFIG_NETWORK_LABEL_SIZE  10U
+
+enum {
+	MOUNT_POSITION_SINGLE = 0,
+	MOUNT_POSITION_UPPER  = 1,
+	MOUNT_POSITION_LOWER  = 2
+};
+
+enum {
+	SURFACE_KIND_DYNAMIC   = 0,
+	SURFACE_KIND_FULL      = 1,
+	SURFACE_KIND_SHUTTERED = 2
+};
+
 typedef struct
 { 
 	uint8_t VersionEeprom;
@@ -66,9 +85,28 @@ typedef struct
 	uint8_t ProvisionTimeoutSecondsMsb;
 	uint8_t ProvisionReason;
 	uint8_t ProvisionResult;
-	uint8_t RFU[14]; // keep struct alignment and backward-compatible layout
+	uint8_t ShotLineNbr;
+	uint8_t MountPosition;
+	uint8_t SurfaceKind;
+	uint8_t ConfigFlags;
+	uint8_t AssetIdLe[4];
+	uint8_t OwnerIdLe[2];
+	uint8_t SiteIdLe[2];
+	uint8_t DestMeshNetworkIdLe[8];
+	uint8_t AssignmentGenerationLe[2];
+	char OwnerLabel[EEPROM_CONFIG_OWNER_LABEL_SIZE];
+	char SiteLabel[EEPROM_CONFIG_SITE_LABEL_SIZE];
+	char NetworkLabel[EEPROM_CONFIG_NETWORK_LABEL_SIZE];
 	uint32_t	Crc; //must be placed at the end of typedef
 }Eeprom_mngt_Config_t;
+
+typedef enum
+{
+	EEPROM_STORE_OK = 0,
+	EEPROM_STORE_INVALID,
+	EEPROM_STORE_IO_ERROR,
+	EEPROM_STORE_VERIFY_ERROR
+} EepromStoreResult;
 
 enum {
 	MODE_NULL	  = 0,
@@ -140,6 +178,17 @@ extern void StopProvisioningRuntimeSession(uint8_t result);
 extern uint8_t GetNfcBootOpcode(void);
 extern void SetNfcBootOpcode(uint8_t opcode);
 extern void ClearNfcBootOpcode(void);
+extern bool EepromConfigValidate(const Eeprom_mngt_Config_t *config);
+extern EepromStoreResult EepromConfigCommit(const Eeprom_mngt_Config_t *config);
+extern void EepromConfigGetSnapshot(Eeprom_mngt_Config_t *config);
+extern void EepromNdefRefresh(void);
+
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+_Static_assert(sizeof(Eeprom_name_Config_t) == 24U, "NAME EEPROM layout changed");
+_Static_assert(offsetof(Eeprom_name_Config_t, Crc) == 20U, "NAME CRC offset changed");
+_Static_assert(sizeof(Eeprom_mngt_Config_t) == EEPROM_CONFIG_SIZE, "CONFIG EEPROM layout changed");
+_Static_assert(offsetof(Eeprom_mngt_Config_t, Crc) == 60U, "CONFIG CRC offset changed");
+#endif
 
 
 

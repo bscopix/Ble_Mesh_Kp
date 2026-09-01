@@ -75,6 +75,18 @@
 #define APPLI_SSID_READ        0x26U /* no params */
 #define APPLI_ENTER_GATT_MAINTENANCE 0x27U /* B1..B4 = transition_id LE */
 #define APPLI_GET_MODE_STATUS         0x28U /* no params */
+#define APPLI_CFG_BEGIN               0x29U
+#define APPLI_CFG_FIELD_WRITE         0x2AU
+#define APPLI_CFG_COMMIT              0x2BU
+#define APPLI_CFG_ABORT               0x2CU
+#define APPLI_CFG_FIELD_READ          0x2DU
+#define APPLI_CFG_STATE_READ          0x2EU
+#define APPLI_ACTIVE_SURFACE_SET      0x2FU
+#define APPLI_ACTIVE_SURFACE_READ     0x30U
+#define APPLI_RADIUS_SET              0x31U
+#define APPLI_RADIUS_READ             0x32U
+#define APPLI_ZEROING_HOLD_SET        0x33U
+#define APPLI_ZEROING_HOLD_READ       0x34U
 /******************************************************************************/
 
 /****************Data Received from Android/iOS. B0 = SubCommand***************/

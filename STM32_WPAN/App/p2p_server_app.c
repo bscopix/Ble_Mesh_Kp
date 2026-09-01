@@ -29,6 +29,7 @@
 #include "ble_mesh.h"
 #include "appli_mesh.h"
 #include "mode_manager.h"
+#include "target_config_service.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -55,6 +56,7 @@
 #define P2P_CTRL_OPCODE_ENTER_MESH                  0x10U
 #define P2P_CTRL_OPCODE_GET_MODE_STATUS             0x11U
 #define P2P_CTRL_OPCODE_GET_CAPABILITIES            0x12U
+#define P2P_CTRL_OPCODE_TARGET_CONFIG                0x13U
 
 #define P2P_CTRL_STATUS_OK                          0x00U
 #define P2P_CTRL_STATUS_BAD_LENGTH                  0x01U
@@ -157,7 +159,8 @@ void P2PS_STM_App_Notification(P2PS_STM_App_Notification_evt_t *pNotification)
             || (opcode == P2P_CTRL_OPCODE_MESH_HARD_FACTORY_RESET)
             || (opcode == P2P_CTRL_OPCODE_ENTER_MESH)
             || (opcode == P2P_CTRL_OPCODE_GET_MODE_STATUS)
-            || (opcode == P2P_CTRL_OPCODE_GET_CAPABILITIES))
+            || (opcode == P2P_CTRL_OPCODE_GET_CAPABILITIES)
+            || (opcode == P2P_CTRL_OPCODE_TARGET_CONFIG))
         {
           if (pNotification->DataTransfered.Length <= P2P_CTRL_MAX_WRITE_LEN)
           {
@@ -201,6 +204,11 @@ void P2PS_STM_App_Notification(P2PS_STM_App_Notification_evt_t *pNotification)
                       pNotification->DataTransfered.Length);
           break;
         }
+      }
+
+      if (pNotification->DataTransfered.Length == 0U)
+      {
+        break;
       }
 
       if(pNotification->DataTransfered.pPayload[0] == 0x00){ /* Direct connection to UART_TX */
@@ -581,7 +589,10 @@ static void P2PS_Handle_Mesh_Control_Write(const uint8_t *payload, uint8_t lengt
   MOBLE_RESULT mesh_result;
   ModeStatus_t mode_status;
   uint8_t mode_payload[12U];
-  uint8_t capability_payload[6U];
+  uint8_t capability_payload[8U];
+  uint8_t target_response[16U];
+  uint8_t target_response_len;
+  TargetCfgStatus target_status;
   uint32_t transition_id;
   uint32_t capabilities;
 
@@ -768,15 +779,34 @@ static void P2PS_Handle_Mesh_Control_Write(const uint8_t *payload, uint8_t lengt
         P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_BAD_LENGTH, NULL, 0U);
         break;
       }
-      capabilities = ModeManager_GetCapabilities();
+      capabilities = ModeManager_GetCapabilities() | (1UL << 5);
       capability_payload[0] = MODE_PROTOCOL_VERSION;
       capability_payload[1] = (uint8_t)(capabilities & 0xFFU);
       capability_payload[2] = (uint8_t)((capabilities >> 8) & 0xFFU);
       capability_payload[3] = (uint8_t)((capabilities >> 16) & 0xFFU);
       capability_payload[4] = (uint8_t)((capabilities >> 24) & 0xFFU);
       capability_payload[5] = P2P_CTRL_MAX_WRITE_LEN;
+      capability_payload[6] = TARGET_CFG_PROTOCOL_VERSION;
+      capability_payload[7] = 0x34U;
       P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_OK,
                              capability_payload, sizeof(capability_payload));
+      break;
+
+    case P2P_CTRL_OPCODE_TARGET_CONFIG:
+      if (declared_payload_len < 1U)
+      {
+        P2PS_Send_Ctl_Response(opcode, P2P_CTRL_STATUS_BAD_LENGTH, NULL, 0U);
+        break;
+      }
+      target_status = TargetConfigService_Handle(TARGET_CFG_SOURCE_GATT,
+                                                  payload[2],
+                                                  &payload[3],
+                                                  (uint8_t)(declared_payload_len - 1U),
+                                                  &target_response[1],
+                                                  &target_response_len);
+      target_response[0] = payload[2];
+      P2PS_Send_Ctl_Response(opcode, (uint8_t)target_status,
+                             target_response, (uint8_t)(target_response_len + 1U));
       break;
 
     default:
